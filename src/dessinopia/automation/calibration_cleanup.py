@@ -6,6 +6,7 @@ from collections.abc import Callable
 from random import Random
 
 from dessinopia.automation.calibration_test import CalibrationTestPattern
+from dessinopia.automation.motion import randomized_click_point, ui_click_radius
 from dessinopia.automation.runner import (
     AutomationCallbacks,
     AutomationState,
@@ -13,7 +14,7 @@ from dessinopia.automation.runner import (
     MouseController,
 )
 from dessinopia.automation.win32_input import Win32Mouse
-from dessinopia.core.models import CalibrationProfile, Point
+from dessinopia.core.models import CalibrationProfile, Point, ScreenRect
 from dessinopia.core.timing import TimingProfile
 from dessinopia.vision.shade_observer import ShadeSelectionObservation
 from dessinopia.vision.tool_observer import (
@@ -127,7 +128,7 @@ class CalibrationCleanupRunner:
                     self.pattern.width,
                     self.pattern.height,
                 )
-                self._click_at(point)
+                self._click_at(point, jitter=False)
                 self.callbacks.progress(done, total)
 
             self._click_at(self.calibration.back_button, palette_delay=True)
@@ -144,10 +145,27 @@ class CalibrationCleanupRunner:
             if self._mouse is not None:
                 self._mouse.release_all()
 
-    def _click_at(self, point: Point, palette_delay: bool = False) -> None:
+    def _click_at(
+        self,
+        point: Point,
+        palette_delay: bool = False,
+        *,
+        jitter: bool = True,
+        safe_region: ScreenRect | None = None,
+    ) -> None:
         assert self._mouse is not None
         self._checkpoint()
-        self._mouse.move_to(point, self._varied(self.timing.cursor_move_seconds))
+        target = (
+            randomized_click_point(
+                point,
+                self.random,
+                ui_click_radius(self.calibration),
+                safe_region,
+            )
+            if jitter
+            else point
+        )
+        self._mouse.move_to(target, self._varied(self.timing.cursor_move_seconds))
         self._mouse.click()
         delay = (
             self.timing.palette_settle_seconds
@@ -158,7 +176,10 @@ class CalibrationCleanupRunner:
 
     def _select_and_verify_pencil(self) -> None:
         for attempt in range(1, 4):
-            self._click_at(self.calibration.pencil_tool)
+            self._click_at(
+                self.calibration.pencil_tool,
+                safe_region=self.calibration.pencil_region,
+            )
             if self.verify_tool is None:
                 return
             result = self.verify_tool(DrawingTool.PENCIL)

@@ -505,7 +505,7 @@ class MainWindow(QMainWindow):
             ).replace(",", " ")
             self.plan_label.setText(
                 f"{len(hybrid.families)} familles · {hybrid.shade_count} nuances\n"
-                f"{metrics.pencil_strokes} traits crayon + "
+                f"{metrics.pencil_strokes} contours/traits continus + "
                 f"{metrics.fill_clicks} remplissages sûrs\n"
                 f"{saved} ({metrics.savings_ratio:.0%})\n"
                 f"Durée estimée : {seconds / 60:.1f} min"
@@ -522,7 +522,7 @@ class MainWindow(QMainWindow):
         ) else ""
         self.plan_label.setText(
             f"{len(self.plan.families)} familles\n{self.plan.shade_count} nuances\n"
-            f"{self.plan.stroke_count} traits/clics{fill_note}\n"
+            f"{self.plan.stroke_count} gestes crayon continus{fill_note}\n"
             f"Durée estimée : {seconds / 60:.1f} min"
         )
 

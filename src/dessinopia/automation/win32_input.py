@@ -159,12 +159,14 @@ class Win32Mouse:
     def move_to(self, point: Point, duration: float = 0.0) -> None:
         self.checkpoint()
         start_x, start_y = self.position()
-        if duration <= 0:
-            self._send(
-                MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, point.x, point.y
-            )
-            return
         distance = math.hypot(point.x - start_x, point.y - start_y)
+        if distance < 0.5:
+            return
+        # Even callers requesting an immediate move get a short visible glide.
+        # This prevents cursor teleportation while keeping adjacent-cell drags
+        # precise and responsive.
+        minimum_duration = min(0.12, max(0.012, distance / 6000))
+        duration = max(float(duration), minimum_duration)
         steps = max(2, min(120, int(max(duration * 100, distance / 10))))
         started = time.monotonic()
         for step in range(1, steps + 1):

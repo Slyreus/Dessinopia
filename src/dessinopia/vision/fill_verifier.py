@@ -478,12 +478,12 @@ class FillCanvasVerifier:
         for stroke in strokes:
             if stroke.palette_index != palette_index:
                 raise ValueError(f"Les traits de {label} utilisent une autre couleur")
-            if stroke.start.row != stroke.end.row:
-                raise ValueError(f"Les traits de {label} doivent être horizontaux")
-            step = 1 if stroke.end.column >= stroke.start.column else -1
-            for column in range(stroke.start.column, stroke.end.column + step, step):
-                coordinates.add((column, stroke.start.row))
-                count += 1
+            covered = {
+                (cell.column, cell.row)
+                for cell in stroke.covered_cells
+            }
+            coordinates.update(covered)
+            count += len(covered)
         return coordinates, count
 
     @staticmethod

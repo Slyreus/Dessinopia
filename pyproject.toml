@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dessinopia"
-version = "1.0.0b1"
+version = "1.0.0b2"
 description = "Convertisseur et assistant de peinture pour Heartopia"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"

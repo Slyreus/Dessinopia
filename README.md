@@ -16,8 +16,8 @@ puis lancez `Dessinopia.exe`.
 - palette de 125 couleurs, avec Floyd–Steinberg et tramage ordonné facultatifs ;
 - overlay transparent et calibration visuelle directement sur le jeu ;
 - détection automatique de la toile, des palettes, des nuances et des outils ;
-- dessin fiable point par point, regroupé par couleur ;
-- remplissage sécurisé facultatif pour les zones fermées ;
+- dessin par traits continus, regroupé par couleur et par zone connexe ;
+- contour continu puis remplissage central sécurisé pour les grandes zones fermées ;
 - pause, reprise atomique, arrêt F12 et diagnostic détaillé ;
 - audit et réparation automatique des cellules manquantes.
 

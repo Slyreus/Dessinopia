@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from random import Random
 
+from dessinopia.automation.motion import randomized_click_point, ui_click_radius
 from dessinopia.automation.runner import (
     AutomationCallbacks,
     AutomationState,
@@ -162,7 +163,12 @@ class PaletteRecoveryRunner:
     def _click_at(self, point: Point, *, palette_delay: bool = False) -> None:
         assert self._mouse is not None
         self._checkpoint()
-        self._mouse.move_to(point, self._varied(self.timing.cursor_move_seconds))
+        target = randomized_click_point(
+            point,
+            self.random,
+            ui_click_radius(self.calibration),
+        )
+        self._mouse.move_to(target, self._varied(self.timing.cursor_move_seconds))
         self._mouse.click()
         delay = (
             self.timing.palette_settle_seconds

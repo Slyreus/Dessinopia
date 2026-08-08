@@ -222,12 +222,17 @@ class HybridAutomationRunner(AutomationRunner):
             if expected is DrawingTool.PENCIL
             else self.calibration.fill_tool
         )
+        safe_region = (
+            self.calibration.pencil_region
+            if expected is DrawingTool.PENCIL
+            else self.calibration.fill_region
+        )
         for attempt in range(1, self._tool_selection_attempts + 1):
             self.callbacks.status(
                 f"Activation de l'outil {expected.value} — contrôle "
                 f"{attempt}/{self._tool_selection_attempts}"
             )
-            self._click_at(point)
+            self._click_at(point, safe_region=safe_region)
             if self.verify_tool is None:
                 self._active_tool = expected
                 return
@@ -305,7 +310,7 @@ class HybridAutomationRunner(AutomationRunner):
             self.plan.width,
             self.plan.height,
         )
-        self._click_at(seed)
+        self._click_at(seed, jitter=False)
         after = self._verify_fill_operation(operation, FillVerificationPhase.AFTER)
         self._checkpoint()
         if after is FillCheckState.SUCCESS:
@@ -371,11 +376,11 @@ class HybridAutomationRunner(AutomationRunner):
             # match. Reassert the exact shade before each physical repair pass.
             self._select_and_verify_shade(operation.palette_index)
             self.callbacks.status(
-                "Réparation point par point de la frontière et de la zone "
+                "Réparation par traits continus de la frontière et de la zone "
                 f"({attempt}/3)"
             )
             for stroke in operation.repair_strokes:
-                self._paint_stroke_cells_individually(stroke)
+                self._trace_stroke(stroke)
                 self._sleep(self.timing.between_strokes_seconds)
             # No stroke above updates _painted. If F12 interrupts any of them,
             # the complete repair operation is replayed idempotently on resume.
@@ -401,38 +406,8 @@ class HybridAutomationRunner(AutomationRunner):
             "Automatisation arrêtée avant de poursuivre."
         )
 
-    def _paint_stroke_cells_individually(self, stroke: Stroke) -> None:
-        """Repair every logical cell with its own physical click.
-
-        Heartopia can skip cells during a continuous drag.  A fill repair favors
-        correctness over speed and therefore never relies on interpolation by
-        the game: every logical cell receives an independent click.
-        """
-
-        self._checkpoint()
-        assert self._mouse is not None
-        step = 1 if stroke.end.column >= stroke.start.column else -1
-        for offset, column in enumerate(
-            range(stroke.start.column, stroke.end.column + step, step)
-        ):
-            self._motion_checkpoint()
-            point = self.calibration.canvas.cell_center(
-                column,
-                stroke.start.row,
-                self.plan.width,
-                self.plan.height,
-            )
-            duration = (
-                self.timing.cursor_move_seconds
-                if offset == 0
-                else self.timing.stroke_cell_seconds
-            )
-            self._mouse.move_to(point, self._varied(duration))
-            self._mouse.click()
-            self._sleep(self.timing.stroke_cell_seconds)
-
     def _trace_stroke(self, stroke: Stroke) -> None:
-        self._paint_stroke_cells_individually(stroke)
+        self._drag_stroke(stroke)
 
     def _commit_pixels(self, count: int) -> None:
         with self._state_lock:

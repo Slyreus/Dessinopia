@@ -13,6 +13,7 @@ from dessinopia.core.path_planner import (
     PaintingPlan,
     ShadePass,
     Stroke,
+    build_continuous_strokes,
     build_painting_plan,
 )
 
@@ -44,7 +45,7 @@ class FillDecision(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class PencilOperation:
-    """One horizontal pencil stroke, associated with its source component."""
+    """One continuous pencil gesture associated with its source component."""
 
     component_id: int
     stroke: Stroke
@@ -509,9 +510,8 @@ def simulate_hybrid_plan(plan: HybridPaintingPlan, *, connectivity: int = 4) -> 
         for shade in family.shades:
             for operation in shade.pencil_operations:
                 stroke = operation.stroke
-                step = 1 if stroke.end.column >= stroke.start.column else -1
-                for column in range(stroke.start.column, stroke.end.column + step, step):
-                    canvas[stroke.start.row, column] = stroke.palette_index
+                for cell in stroke.covered_cells:
+                    canvas[cell.row, cell.column] = stroke.palette_index
             for operation in shade.fill_operations:
                 region = _flood_region(canvas, operation.seed, connectivity)
                 for column, row in region:
@@ -697,14 +697,11 @@ def _flood_region(canvas: np.ndarray, seed: Cell, connectivity: int) -> set[tupl
 
 
 def _stroke_cells(strokes: tuple[Stroke, ...]) -> set[tuple[int, int]]:
-    cells: set[tuple[int, int]] = set()
-    for stroke in strokes:
-        step = 1 if stroke.end.column >= stroke.start.column else -1
-        cells.update(
-            (column, stroke.start.row)
-            for column in range(stroke.start.column, stroke.end.column + step, step)
-        )
-    return cells
+    return {
+        (cell.column, cell.row)
+        for stroke in strokes
+        for cell in stroke.covered_cells
+    }
 
 
 def _pencil_operations(
@@ -714,36 +711,24 @@ def _pencil_operations(
     height: int,
     component_by_coordinate: dict[tuple[int, int], int],
 ) -> tuple[PencilOperation, ...]:
-    mask = np.zeros((height, width), dtype=bool)
+    del width, height
+    cells_by_component: dict[int, list[Cell]] = {}
     for cell in cells:
-        mask[cell.row, cell.column] = True
+        component_id = component_by_coordinate[(cell.column, cell.row)]
+        cells_by_component.setdefault(component_id, []).append(cell)
     operations: list[PencilOperation] = []
-    for row in range(height):
-        columns = np.flatnonzero(mask[row])
-        if not len(columns):
-            continue
-        split_points = np.where(np.diff(columns) > 1)[0]
-        starts = np.r_[0, split_points + 1]
-        ends = np.r_[split_points, len(columns) - 1]
-        row_operations: list[PencilOperation] = []
-        for start_index, end_index in zip(starts, ends, strict=True):
-            left = int(columns[start_index])
-            right = int(columns[end_index])
-            start_column, end_column = (right, left) if row % 2 else (left, right)
-            component_id = component_by_coordinate[(start_column, row)]
-            row_operations.append(
-                PencilOperation(
-                    component_id,
-                    Stroke(
-                        palette_index,
-                        Cell(start_column, row),
-                        Cell(end_column, row),
-                    ),
-                )
-            )
-        if row % 2:
-            row_operations.reverse()
-        operations.extend(row_operations)
+    component_order = sorted(
+        cells_by_component,
+        key=lambda component_id: min(
+            (_cell_key(cell) for cell in cells_by_component[component_id]),
+        ),
+    )
+    for component_id in component_order:
+        component_cells = tuple(cells_by_component[component_id])
+        operations.extend(
+            PencilOperation(component_id, stroke)
+            for stroke in build_continuous_strokes(component_cells, palette_index)
+        )
     return tuple(operations)
 
 

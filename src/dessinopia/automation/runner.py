@@ -8,8 +8,9 @@ from enum import StrEnum
 from random import Random
 from typing import Protocol
 
+from dessinopia.automation.motion import randomized_click_point, ui_click_radius
 from dessinopia.automation.win32_input import Win32Mouse
-from dessinopia.core.models import CalibrationProfile, Point
+from dessinopia.core.models import CalibrationProfile, Point, ScreenRect
 from dessinopia.core.palette import PALETTE_BY_INDEX
 from dessinopia.core.path_planner import PaintingPlan, Stroke
 from dessinopia.core.timing import TimingProfile
@@ -330,38 +331,82 @@ class AutomationRunner:
         return True
 
     def _draw_stroke(self, stroke: Stroke) -> None:
-        self._checkpoint()
-        assert self._mouse is not None
-        step = 1 if stroke.end.column >= stroke.start.column else -1
-        for offset, column in enumerate(
-            range(stroke.start.column, stroke.end.column + step, step)
-        ):
-            self._motion_checkpoint()
-            point = self.calibration.canvas.cell_center(
-                column,
-                stroke.start.row,
-                self.plan.width,
-                self.plan.height,
-            )
-            duration = (
-                self.timing.cursor_move_seconds
-                if offset == 0
-                else self.timing.stroke_cell_seconds
-            )
-            self._mouse.move_to(point, self._varied(duration))
-            self._mouse.click()
-            # Heartopia can drop cells when clicks arrive back-to-back. The
-            # reliable mode gives every logical cell its own settling delay.
-            self._sleep(self.timing.stroke_cell_seconds)
+        self._drag_stroke(stroke)
         with self._state_lock:
             self._painted += stroke.length
             painted = self._painted
         self.callbacks.progress(painted, self.plan.pixel_count)
         self._sleep(self.timing.between_strokes_seconds)
 
-    def _click_at(self, point: Point, palette_delay: bool = False) -> None:
+    def _drag_stroke(self, stroke: Stroke) -> None:
+        """Paint one logical component with a single held-button gesture."""
+
+        self._checkpoint()
         assert self._mouse is not None
-        self._mouse.move_to(point, self._varied(self.timing.cursor_move_seconds))
+        trace = stroke.trace_cells
+        first = self.calibration.canvas.cell_center(
+            trace[0].column,
+            trace[0].row,
+            self.plan.width,
+            self.plan.height,
+        )
+        self._mouse.move_to(first, self._varied(self.timing.cursor_move_seconds))
+        if len(trace) == 1:
+            self._motion_checkpoint()
+            self._mouse.click()
+            self._motion_sleep(self.timing.stroke_cell_seconds)
+            return
+
+        self._mouse.left_down()
+        try:
+            self._motion_sleep(self.timing.stroke_cell_seconds)
+            for cell in trace[1:]:
+                self._motion_checkpoint()
+                point = self.calibration.canvas.cell_center(
+                    cell.column,
+                    cell.row,
+                    self.plan.width,
+                    self.plan.height,
+                )
+                self._mouse.move_to(
+                    point,
+                    self._varied(self.timing.stroke_cell_seconds),
+                )
+            self._motion_sleep(self.timing.stroke_cell_seconds)
+        finally:
+            self._mouse.left_up()
+
+    def _motion_sleep(self, seconds: float) -> None:
+        """Wait inside a gesture without pausing while the button is held."""
+
+        deadline = time.monotonic() + self._varied(seconds)
+        while time.monotonic() < deadline:
+            self._motion_checkpoint()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(0.01, remaining))
+
+    def _click_at(
+        self,
+        point: Point,
+        palette_delay: bool = False,
+        *,
+        jitter: bool = True,
+        safe_region: ScreenRect | None = None,
+    ) -> None:
+        assert self._mouse is not None
+        target = (
+            randomized_click_point(
+                point,
+                self.random,
+                ui_click_radius(self.calibration),
+                safe_region,
+            )
+            if jitter
+            else point
+        )
+        self._mouse.move_to(target, self._varied(self.timing.cursor_move_seconds))
         self._mouse.click()
         delay = (
             self.timing.palette_settle_seconds
@@ -377,7 +422,10 @@ class AutomationRunner:
 
     def _select_and_verify_pencil(self) -> None:
         for attempt in range(1, self._tool_selection_attempts + 1):
-            self._click_at(self.calibration.pencil_tool)
+            self._click_at(
+                self.calibration.pencil_tool,
+                safe_region=self.calibration.pencil_region,
+            )
             if self.verify_tool is None:
                 return
             result = self.verify_tool(DrawingTool.PENCIL)
