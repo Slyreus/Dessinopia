@@ -267,11 +267,13 @@ class MainWindow(QMainWindow):
         self.dither_combo.currentIndexChanged.connect(self._settings_changed)
         form.addRow("Tramage", self.dither_combo)
         self.tempo_combo = QComboBox()
+        self.tempo_combo.addItem("Très lent (anti-surcharge)", "tres_lent")
         self.tempo_combo.addItem("Prudent", "prudent")
         self.tempo_combo.addItem("Équilibré", "equilibre")
         self.tempo_combo.addItem("Rapide", "rapide")
         self.tempo_combo.setToolTip(
-            "Temporisation des clics pour laisser à l'interface Heartopia le temps de réagir."
+            "Temporisation des déplacements et des clics. Le mode Très lent réduit "
+            "fortement le rythme envoyé à Heartopia et convient aux systèmes chargés."
         )
         self.tempo_combo.currentIndexChanged.connect(self._settings_changed)
         form.addRow("Tempo", self.tempo_combo)

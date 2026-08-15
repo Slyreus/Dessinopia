@@ -18,6 +18,7 @@ puis lancez `Dessinopia.exe`.
 - détection automatique de la toile, des palettes, des nuances et des outils ;
 - dessin par traits continus, regroupé par couleur et par zone connexe ;
 - contour continu puis remplissage central sécurisé pour les grandes zones fermées ;
+- tempo « Très lent (anti-surcharge) » pour laisser davantage de temps au jeu entre les gestes ;
 - pause, reprise atomique, arrêt F12 et diagnostic détaillé ;
 - audit et réparation automatique des cellules manquantes.
 

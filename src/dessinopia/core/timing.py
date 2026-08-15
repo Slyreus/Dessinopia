@@ -33,6 +33,9 @@ class TimingProfile:
 
 
 TIMING_PRESETS: dict[str, TimingProfile] = {
+    # Mode volontairement lent pour les machines modestes ou lorsque Heartopia
+    # a besoin de davantage de temps pour assimiler les gestes et animations.
+    "tres_lent": TimingProfile(0.40, 1.40, 2.40, 0.120, 0.300, 0.12),
     "prudent": TimingProfile(0.16, 0.72, 1.00, 0.038, 0.080, 0.22),
     "equilibre": TimingProfile(),
     "rapide": TimingProfile(0.045, 0.20, 0.42, 0.020, 0.030, 0.10),
