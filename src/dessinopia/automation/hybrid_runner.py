@@ -59,6 +59,7 @@ class HybridAutomationRunner(AutomationRunner):
         mouse_factory: Callable[[Callable[[], None]], MouseController] | None = None,
         seed: int | None = None,
         resume_from_pixels: int = 0,
+        force_verification_failures: bool = False,
     ) -> None:
         self.verify_tool = verify_tool
         self.verify_fill = verify_fill
@@ -75,6 +76,7 @@ class HybridAutomationRunner(AutomationRunner):
             mouse_factory=mouse_factory,
             seed=seed,
             resume_from_pixels=resume_from_pixels,
+            force_verification_failures=force_verification_failures,
         )
         self.plan: HybridPaintingPlan
         if self.plan.has_fills and (
@@ -247,6 +249,12 @@ class HybridAutomationRunner(AutomationRunner):
             if accepted:
                 self._active_tool = expected
                 return
+        if self.force_verification_failures:
+            self._active_tool = expected
+            self.callbacks.status(
+                f"Mode Sans échec — outil {expected.value} accepté sans confirmation"
+            )
+            return
         self._active_tool = DrawingTool.UNKNOWN
         raise RuntimeError(
             f"L'outil {expected.value} n'a pas pu être confirmé. "
@@ -286,11 +294,19 @@ class HybridAutomationRunner(AutomationRunner):
             self._commit_pixels(operation.filled_pixel_count)
             return
         if before is FillCheckState.FALLBACK:
-            self.callbacks.status(
-                "Frontière incertaine — réparation complète et atomique au crayon"
-            )
-            self._repair_and_verify_atomically(operation)
-            return
+            before = self._redraw_fence_and_recheck(operation)
+            if before is FillCheckState.ALREADY_FILLED:
+                self.callbacks.status(
+                    "Zone déjà remplie après reprise du contour — validation sans clic"
+                )
+                self._commit_pixels(operation.filled_pixel_count)
+                return
+            if before is FillCheckState.FALLBACK:
+                self.callbacks.status(
+                    "Frontière toujours incertaine — réparation complète au crayon"
+                )
+                self._repair_and_verify_atomically(operation)
+                return
         if before is FillCheckState.OVERFLOW:
             self.manual_recovery_required = True
             raise RuntimeError(
@@ -330,6 +346,28 @@ class HybridAutomationRunner(AutomationRunner):
             "Le résultat du remplissage est visuellement incertain. Automatisation "
             "arrêtée avant toute autre action sur la toile."
         )
+
+    def _redraw_fence_and_recheck(self, operation: FillOperation) -> FillCheckState:
+        """Repair a missed contour without abandoning an otherwise safe bucket."""
+
+        self._ensure_tool(DrawingTool.PENCIL)
+        for attempt in range(1, 3):
+            self._select_and_verify_shade(operation.palette_index)
+            self.callbacks.status(
+                f"Contour incertain — reprise sécurisée de la frontière ({attempt}/2)"
+            )
+            for stroke in operation.fence_strokes:
+                self._trace_stroke(stroke)
+                self._sleep(self.timing.between_strokes_seconds)
+            self._checkpoint()
+            result = self._verify_fill_operation(
+                operation,
+                FillVerificationPhase.BEFORE,
+            )
+            self._checkpoint()
+            if result is not FillCheckState.FALLBACK:
+                return result
+        return FillCheckState.FALLBACK
 
     def _verify_fill_operation(
         self,
@@ -401,6 +439,12 @@ class HybridAutomationRunner(AutomationRunner):
                     "Réparation au crayon non confirmée — nouvelle passe complète "
                     f"({attempt + 1}/3)"
                 )
+        if self.force_verification_failures:
+            self.callbacks.status(
+                "Mode Sans échec — zone entièrement repassée au crayon et validée de force"
+            )
+            self._commit_pixels(operation.filled_pixel_count)
+            return
         raise RuntimeError(
             "La zone réparée au crayon n'a pas pu être confirmée après trois passes. "
             "Automatisation arrêtée avant de poursuivre."

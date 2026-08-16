@@ -16,10 +16,14 @@ puis lancez `Dessinopia.exe`.
 - palette de 125 couleurs, avec Floyd–Steinberg et tramage ordonné facultatifs ;
 - overlay transparent et calibration visuelle directement sur le jeu ;
 - détection automatique de la toile, des palettes, des nuances et des outils ;
+- adaptation automatique des repères sauvegardés à la résolution et à la position de l’écran ;
 - dessin par traits continus, regroupé par couleur et par zone connexe ;
-- contour continu puis remplissage central sécurisé pour les grandes zones fermées ;
+- contour renforcé puis remplissage central sécurisé pour les grandes zones fermées ;
 - tempo « Très lent (anti-surcharge) » pour laisser davantage de temps au jeu entre les gestes ;
-- pause, reprise atomique, arrêt F12 et diagnostic détaillé ;
+- tempos Lent, Prudent, Équilibré et Rapide pour ajuster précisément le rythme ;
+- pause/reprise par le bouton ou la touche F8, arrêt F12 et diagnostic détaillé ;
+- choix explicite entre reprendre le checkpoint ou réinitialiser à 0 % ;
+- mode « Sans échec » déverrouillé après une erreur pour forcer une reprise contrôlée ;
 - audit et réparation automatique des cellules manquantes.
 
 ## Utilisation

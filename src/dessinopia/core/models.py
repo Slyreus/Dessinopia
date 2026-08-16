@@ -178,6 +178,8 @@ class CalibrationProfile:
     shade_color_points: tuple[Point, ...] = ()
     pencil_tool_roi: ScreenRect | None = None
     fill_tool_roi: ScreenRect | None = None
+    reference_left: float = 0.0
+    reference_top: float = 0.0
 
     def __post_init__(self) -> None:
         """Materialize tool ROIs and keep them centred on their click targets.
@@ -218,6 +220,17 @@ class CalibrationProfile:
     def fill_region(self) -> ScreenRect:
         assert self.fill_tool_roi is not None
         return self.fill_tool_roi
+
+    @property
+    def reference_bounds(self) -> ScreenRect:
+        """Physical bounds in which the saved calibration was created."""
+
+        return ScreenRect(
+            self.reference_left,
+            self.reference_top,
+            float(self.reference_width),
+            float(self.reference_height),
+        )
 
     def main_color_point(self, column: int, row: int) -> Point:
         """Return one main-palette centre, including an individual override."""
@@ -262,26 +275,75 @@ class CalibrationProfile:
         return replace(self, shade_color_points=tuple(points))
 
     def scaled_to(self, width: int, height: int) -> CalibrationProfile:
-        sx = width / self.reference_width
-        sy = height / self.reference_height
+        return self.remapped_to(
+            ScreenRect(
+                self.reference_left,
+                self.reference_top,
+                float(width),
+                float(height),
+            )
+        )
+
+    def remapped_to(self, bounds: ScreenRect) -> CalibrationProfile:
+        """Scale and translate every marker into new physical display bounds.
+
+        The mapping is relative to the complete capture on which the user calibrated
+        Heartopia. It therefore preserves manual offsets on another resolution and
+        also handles monitors whose virtual-desktop origin is not ``(0, 0)``.
+        """
+
+        source = self.reference_bounds
+        if source.width <= 0 or source.height <= 0:
+            raise ValueError("La référence de calibration doit avoir une taille positive")
+        if bounds.width <= 0 or bounds.height <= 0:
+            raise ValueError("La nouvelle résolution doit avoir une taille positive")
+        sx = bounds.width / source.width
+        sy = bounds.height / source.height
+
+        def map_point(point: Point) -> Point:
+            return Point(
+                bounds.left + (point.x - source.left) * sx,
+                bounds.top + (point.y - source.top) * sy,
+            )
+
+        def map_rect(rect: ScreenRect) -> ScreenRect:
+            return ScreenRect(
+                bounds.left + (rect.left - source.left) * sx,
+                bounds.top + (rect.top - source.top) * sy,
+                rect.width * sx,
+                rect.height * sy,
+            )
+
         return CalibrationProfile(
             name=self.name,
-            reference_width=width,
-            reference_height=height,
-            canvas=self.canvas.scaled(sx, sy),
-            palette_icon=self.palette_icon.scaled(sx, sy),
-            back_button=self.back_button.scaled(sx, sy),
-            small_brush=self.small_brush.scaled(sx, sy),
-            pencil_tool=self.pencil_tool.scaled(sx, sy),
-            fill_tool=self.fill_tool.scaled(sx, sy),
-            main_colors=self.main_colors.scaled(sx, sy),
-            shades=self.shades.scaled(sx, sy),
+            reference_width=round(bounds.width),
+            reference_height=round(bounds.height),
+            canvas=map_rect(self.canvas),
+            palette_icon=map_point(self.palette_icon),
+            back_button=map_point(self.back_button),
+            small_brush=map_point(self.small_brush),
+            pencil_tool=map_point(self.pencil_tool),
+            fill_tool=map_point(self.fill_tool),
+            main_colors=CenterGrid(
+                map_point(self.main_colors.first),
+                map_point(self.main_colors.last),
+                self.main_colors.columns,
+                self.main_colors.rows,
+            ),
+            shades=CenterGrid(
+                map_point(self.shades.first),
+                map_point(self.shades.last),
+                self.shades.columns,
+                self.shades.rows,
+            ),
             confidence=self.confidence,
             source=self.source,
-            main_color_points=tuple(point.scaled(sx, sy) for point in self.main_color_points),
-            shade_color_points=tuple(point.scaled(sx, sy) for point in self.shade_color_points),
-            pencil_tool_roi=self.pencil_region.scaled(sx, sy),
-            fill_tool_roi=self.fill_region.scaled(sx, sy),
+            main_color_points=tuple(map_point(point) for point in self.main_color_points),
+            shade_color_points=tuple(map_point(point) for point in self.shade_color_points),
+            pencil_tool_roi=map_rect(self.pencil_region),
+            fill_tool_roi=map_rect(self.fill_region),
+            reference_left=bounds.left,
+            reference_top=bounds.top,
         )
 
     def translated(self, dx: float, dy: float) -> CalibrationProfile:
@@ -316,6 +378,8 @@ class CalibrationProfile:
             shade_color_points=tuple(move_point(point) for point in self.shade_color_points),
             pencil_tool_roi=self.pencil_region.translated(dx, dy),
             fill_tool_roi=self.fill_region.translated(dx, dy),
+            reference_left=self.reference_left + dx,
+            reference_top=self.reference_top + dy,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -398,6 +462,8 @@ class CalibrationProfile:
                 if fill_roi_data
                 else default_tool_roi(fill_tool, reference_width, reference_height)
             ),
+            reference_left=float(data.get("reference_left", 0.0)),
+            reference_top=float(data.get("reference_top", 0.0)),
         )
 
 

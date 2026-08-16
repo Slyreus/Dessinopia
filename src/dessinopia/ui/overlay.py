@@ -145,6 +145,7 @@ class OverlayToolbar(QFrame):
     test_requested = Signal()
     pause_requested = Signal()
     resume_requested = Signal()
+    reset_requested = Signal()
     stop_requested = Signal()
     calibrate_requested = Signal()
     repair_requested = Signal()
@@ -153,6 +154,8 @@ class OverlayToolbar(QFrame):
     def __init__(self) -> None:
         super().__init__()
         self._drag_offset = None
+        self._active = False
+        self._resume_available = False
         self.setWindowFlags(
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
@@ -221,14 +224,20 @@ class OverlayToolbar(QFrame):
             "Rechercher les cellules encore ivoire et les repeindre en mode prudent"
         )
         layout.addWidget(self.repair_button)
+        self.reset_button = QPushButton("Réinitialiser la reprise")
+        self.reset_button.setToolTip(
+            "Abandonner le checkpoint et recommencer le plan depuis zéro"
+        )
+        layout.addWidget(self.reset_button)
         self.start_button.clicked.connect(self.start_requested)
         self.test_button.clicked.connect(self.test_requested)
         self.pause_button.clicked.connect(self.pause_requested)
         self.resume_button.clicked.connect(self.resume_requested)
+        self.reset_button.clicked.connect(self.reset_requested)
         self.stop_button.clicked.connect(self.stop_requested)
         self.calibration_button.clicked.connect(self.calibrate_requested)
         self.repair_button.clicked.connect(self.repair_requested)
-        emergency = QLabel("F12 : arrêt d’urgence")
+        emergency = QLabel("F8 : pause / reprendre · F12 : arrêt d’urgence")
         emergency.setAlignment(Qt.AlignmentFlag.AlignCenter)
         emergency.setStyleSheet("color: #ffb7c9; font-weight: 700;")
         layout.addWidget(emergency)
@@ -245,6 +254,7 @@ class OverlayToolbar(QFrame):
 
     def set_running(self, running: bool, paused: bool = False, stopping: bool = False) -> None:
         active = running or stopping
+        self._active = active
         self.start_button.setEnabled(not active)
         self.pause_button.setEnabled(running and not paused and not stopping)
         self.resume_button.setEnabled(running and paused and not stopping)
@@ -252,6 +262,11 @@ class OverlayToolbar(QFrame):
         self.test_button.setEnabled(not active)
         self.calibration_button.setEnabled(not active)
         self.repair_button.setEnabled(not active)
+        self.reset_button.setEnabled(not active and self._resume_available)
+
+    def set_resume_available(self, available: bool) -> None:
+        self._resume_available = available
+        self.reset_button.setEnabled(available and not self._active)
 
     def set_progress(self, done: int, total: int) -> None:
         self.progress.setValue(round(done * 100 / total) if total else 0)

@@ -416,6 +416,17 @@ class FillCanvasVerifier:
             raise ValueError("Une cellule de contrôle est hors de la grille")
 
         expected_coordinates = coordinate_groups[1]
+        fence_coordinates, fence_count = self._stroke_coordinates(
+            operation.fence_strokes,
+            operation.palette_index,
+            "frontière",
+        )
+        if (
+            not operation.fence_strokes
+            or fence_count != len(fence_coordinates)
+            or fence_coordinates != coordinate_groups[0]
+        ):
+            raise ValueError("Les traits de frontière doivent couvrir exactement le contour")
         fallback_coordinates, fallback_count = self._stroke_coordinates(
             operation.fallback_strokes,
             operation.palette_index,

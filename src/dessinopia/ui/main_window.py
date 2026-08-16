@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from dessinopia import __display_version__
 from dessinopia.automation.calibration_cleanup import CalibrationCleanupRunner
 from dessinopia.automation.calibration_test import (
     CalibrationTestPattern,
@@ -42,6 +43,7 @@ from dessinopia.automation.palette_recovery import PaletteRecoveryRunner
 from dessinopia.automation.resume_journal import (
     PlanResumeJournal,
     RecoveryState,
+    ResumeJournalStore,
     ResumeMode,
 )
 from dessinopia.automation.runner import (
@@ -123,7 +125,9 @@ class AutomationThread(QThread):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Dessinopia — Heartopia Painting Assistant")
+        self.setWindowTitle(
+            f"Dessinopia {__display_version__} — Heartopia Painting Assistant"
+        )
         self.resize(1320, 820)
         self.setMinimumSize(1100, 700)
         self.store = SettingsStore()
@@ -136,6 +140,8 @@ class MainWindow(QMainWindow):
         self.fill_verifier = FillCanvasVerifier()
         self.capture = ScreenCapture()
         self.locator = HeartopiaWindowLocator()
+        self._calibration_was_remapped = False
+        self._adapt_saved_calibration_to_display()
         self.source_path: Path | None = None
         self.result: ConversionResult | None = None
         self.plan: PaintingPlan | None = None
@@ -154,6 +160,7 @@ class MainWindow(QMainWindow):
         self._palette_recovery_continuation: str | None = None
         self._diagnostic_log_path: Path | None = None
         self._diagnostic_lock = threading.Lock()
+        self._force_continue_unlocked = False
         self.overlay = GridOverlay()
         self.overlay_toolbar = OverlayToolbar()
         self.calibration_editor = CalibrationOverlayEditor()
@@ -211,6 +218,9 @@ class MainWindow(QMainWindow):
         self.status_label.setObjectName("muted")
         footer.addWidget(self.status_label)
         footer.addStretch()
+        version = QLabel(f"Version {__display_version__}")
+        version.setObjectName("muted")
+        footer.addWidget(version)
         credit = QLabel(
             "Créé par <b>Slyreus</b> · "
             '<a href="https://paypal.me/FlorianButel">Soutenir via PayPal</a>'
@@ -268,6 +278,7 @@ class MainWindow(QMainWindow):
         form.addRow("Tramage", self.dither_combo)
         self.tempo_combo = QComboBox()
         self.tempo_combo.addItem("Très lent (anti-surcharge)", "tres_lent")
+        self.tempo_combo.addItem("Lent", "lent")
         self.tempo_combo.addItem("Prudent", "prudent")
         self.tempo_combo.addItem("Équilibré", "equilibre")
         self.tempo_combo.addItem("Rapide", "rapide")
@@ -297,8 +308,16 @@ class MainWindow(QMainWindow):
         self.fill_checkbox.setToolTip(
             "Utiliser le pot uniquement pour les zones dont les frontières sont prouvées fermées"
         )
-        self.fill_checkbox.toggled.connect(self._settings_changed)
+        self.fill_checkbox.toggled.connect(self._fill_mode_changed)
         layout.addWidget(self.fill_checkbox)
+        self.force_continue_checkbox = QCheckBox("Sans échec (forcer les vérifications)")
+        self.force_continue_checkbox.setEnabled(False)
+        self.force_continue_checkbox.setToolTip(
+            "Se débloque après une première erreur. Force les contrôles non concluants, "
+            "mais ne neutralise ni F12 ni un débordement du pot confirmé."
+        )
+        self.force_continue_checkbox.toggled.connect(self._force_mode_changed)
+        layout.addWidget(self.force_continue_checkbox)
         layout.addStretch()
         self.convert_button = QPushButton("Convertir l'image")
         self.convert_button.setObjectName("primary")
@@ -356,6 +375,7 @@ class MainWindow(QMainWindow):
         self.overlay_toolbar.test_requested.connect(self.start_calibration_test)
         self.overlay_toolbar.pause_requested.connect(self.pause_automation)
         self.overlay_toolbar.resume_requested.connect(self.resume_automation)
+        self.overlay_toolbar.reset_requested.connect(self.reset_resume)
         self.overlay_toolbar.stop_requested.connect(self.stop_automation)
         self.overlay_toolbar.calibrate_requested.connect(self.open_calibration)
         self.overlay_toolbar.repair_requested.connect(self.start_hole_repair)
@@ -392,7 +412,96 @@ class MainWindow(QMainWindow):
         self._update_grid_label()
         if self.settings.calibration:
             confidence = round(self.settings.calibration.confidence * 100)
-            self.detection_label.setText(f"Calibré · {confidence}%")
+            if self._calibration_was_remapped:
+                bounds = self.settings.calibration.reference_bounds
+                self.detection_label.setText(
+                    f"Calibré · ajusté à {round(bounds.width)}×{round(bounds.height)}"
+                )
+            else:
+                self.detection_label.setText(f"Calibré · {confidence}%")
+
+    def _adapt_saved_calibration_to_display(self) -> None:
+        """Remap persisted manual markers when the game/display bounds changed."""
+
+        profile = self.settings.calibration
+        if profile is None:
+            return
+        try:
+            window = self.locator.find()
+            monitors = self.capture.monitor_bounds()
+        except Exception:
+            return
+
+        source = profile.reference_bounds
+        # Profiles written before Beta 4 did not persist their virtual-desktop
+        # origin. Recover it from the monitor that still contains the saved canvas.
+        if not (
+            source.left <= profile.canvas.center.x < source.right
+            and source.top <= profile.canvas.center.y < source.bottom
+        ):
+            legacy_monitor = monitor_containing_point(monitors, profile.canvas.center)
+            if legacy_monitor is not None:
+                source = ScreenRect(
+                    legacy_monitor.left,
+                    legacy_monitor.top,
+                    source.width,
+                    source.height,
+                )
+                profile = replace(
+                    profile,
+                    reference_left=source.left,
+                    reference_top=source.top,
+                )
+
+        if window is not None:
+            target = window.rect
+        else:
+            target = monitor_containing_point(monitors, profile.canvas.center)
+            if target is None and monitors:
+                target = min(
+                    monitors,
+                    key=lambda bounds: (
+                        bounds.center.x - profile.canvas.center.x
+                    ) ** 2
+                    + (
+                        bounds.center.y - profile.canvas.center.y
+                    ) ** 2,
+                )
+        if target is None:
+            return
+
+        changed = any(
+            abs(current - expected) > 0.5
+            for current, expected in zip(
+                (
+                    source.left,
+                    source.top,
+                    source.width,
+                    source.height,
+                ),
+                (
+                    target.left,
+                    target.top,
+                    target.width,
+                    target.height,
+                ),
+                strict=True,
+            )
+        )
+        if changed:
+            profile = profile.remapped_to(target)
+            self._calibration_was_remapped = True
+        elif profile != self.settings.calibration:
+            # Persist the recovered origin for a legacy multi-monitor profile.
+            profile = replace(
+                profile,
+                reference_left=target.left,
+                reference_top=target.top,
+            )
+        else:
+            return
+        self.settings.calibration = profile
+        self.store.save(self.settings)
 
     @staticmethod
     def _select_combo(combo: QComboBox, value: object) -> None:
@@ -519,9 +628,14 @@ class MainWindow(QMainWindow):
             self.plan.shade_count,
             len(self.plan.families),
         )
-        fill_note = "\nAucune zone remplissable sûre · crayon uniquement" if (
-            hybrid is not None and hybrid.fill_enabled
-        ) else ""
+        fill_note = ""
+        if hybrid is not None and hybrid.fill_enabled:
+            metrics = hybrid.metrics
+            fill_note = (
+                "\nAucune zone remplissable sûre · crayon uniquement"
+                f"\n{metrics.candidate_components} candidates analysées · "
+                f"{metrics.unsafe_connectivity_components} refusées par la sécurité"
+            )
         self.plan_label.setText(
             f"{len(self.plan.families)} familles\n{self.plan.shade_count} nuances\n"
             f"{self.plan.stroke_count} gestes crayon continus{fill_note}\n"
@@ -781,7 +895,11 @@ class MainWindow(QMainWindow):
                 force=True,
             )
         self._start_diagnostic_session("dessin")
-        if self._resume_pixels == 0 and not self._calibration_test_is_valid():
+        if (
+            self._resume_pixels == 0
+            and not self._calibration_test_is_valid()
+            and not self._force_mode_active()
+        ):
             self._prepare_calibration_test()
             return
         self._prepare_drawing()
@@ -869,12 +987,21 @@ class MainWindow(QMainWindow):
             )
             self._update_plan_summary()
         use_fill = planning_fill and self.hybrid_plan.has_fills
+        force_mode = self._force_mode_active()
         canvas_is_current, canvas_message, override_allowed = self._validate_canvas_before_start()
-        if not canvas_is_current and not self._confirm_canvas_override(
-            canvas_message,
-            allow_continue=override_allowed,
-        ):
-            return
+        if not canvas_is_current:
+            if force_mode:
+                self._append_diagnostic(
+                    f"Mode Sans échec — contrôle de toile ignoré : {canvas_message}"
+                )
+                self.overlay_toolbar.status_label.setText(
+                    "Mode Sans échec — position calibrée utilisée sans confirmation visuelle"
+                )
+            elif not self._confirm_canvas_override(
+                canvas_message,
+                allow_continue=override_allowed,
+            ):
+                return
         continuation = "draw_confirmed" if confirmation_already_given else "draw"
         if not self._ensure_main_palette(continuation):
             return
@@ -902,6 +1029,11 @@ class MainWindow(QMainWindow):
                     "Le pot sera utilisé uniquement après contrôle de chaque frontière ; "
                     "un doute provoquera un repli au crayon. "
                     if use_fill
+                    else ""
+                )
+                + (
+                    "Mode Sans échec actif : les contrôles non concluants seront forcés. "
+                    if force_mode
                     else ""
                 )
                 + "F12 arrête immédiatement. Continuer ?",
@@ -935,6 +1067,7 @@ class MainWindow(QMainWindow):
                     calibration=active_calibration,
                 ),
                 resume_from_pixels=self._resume_pixels,
+                force_verification_failures=force_mode,
             )
         else:
             active_calibration = self.settings.calibration
@@ -956,6 +1089,7 @@ class MainWindow(QMainWindow):
                     active_calibration,
                 ),
                 resume_from_pixels=self._resume_pixels,
+                force_verification_failures=force_mode,
             )
         self._launch_worker(runner, "draw")
 
@@ -1033,6 +1167,17 @@ class MainWindow(QMainWindow):
         observation = self._observe_palette()
         if observation is not None and observation.matches_expected:
             self.overlay_toolbar.status_label.setText("Palette principale confirmée")
+            return True
+        force_mode = self._force_mode_active()
+        if force_mode and (
+            observation is None or observation.state is PaletteState.UNKNOWN
+        ):
+            self._append_diagnostic(
+                "Mode Sans échec — palette principale supposée visible"
+            )
+            self.overlay_toolbar.status_label.setText(
+                "Mode Sans échec — palette principale supposée visible"
+            )
             return True
         self._palette_recovery_continuation = continuation
         assert self.settings.calibration is not None
@@ -1234,6 +1379,41 @@ class MainWindow(QMainWindow):
         if self.runner:
             self.runner.resume()
 
+    def reset_resume(self) -> None:
+        """Explicitly abandon the checkpoint and restart the immutable plan at zero."""
+
+        if self._automation_is_active():
+            return
+        if not (self._resume_pixels or self._manual_recovery_required):
+            self.overlay_toolbar.status_label.setText("Aucun point de reprise à réinitialiser")
+            return
+        response = QMessageBox.question(
+            self.overlay_toolbar,
+            "Réinitialiser la reprise",
+            "Abandonner définitivement le checkpoint et recommencer le dessin depuis 0 % ?\n\n"
+            "Cette action n'efface pas la toile dans Heartopia. Les zones déjà peintes "
+            "seront simplement redessinées. Corrigez d'abord tout débordement éventuel.",
+        )
+        if response is not QMessageBox.StandardButton.Yes:
+            return
+        try:
+            if self._resume_journal is not None:
+                self._resume_journal.clear()
+            else:
+                ResumeJournalStore().clear()
+        except OSError as exc:
+            self._append_diagnostic(f"Journal de reprise non supprimé — {exc}")
+        self._resume_journal = None
+        self._resume_pixels = 0
+        self._resume_fill_mode = None
+        self._manual_recovery_required = False
+        self._validated_calibration_signature = None
+        self.overlay_toolbar.set_progress(0, self.plan.pixel_count if self.plan else 0)
+        self._update_resume_ui()
+        self.overlay_toolbar.status_label.setText(
+            "Reprise réinitialisée — le prochain lancement recommencera à 0 %"
+        )
+
     def stop_automation(self) -> None:
         if self.runner:
             self.runner.stop()
@@ -1431,6 +1611,7 @@ class MainWindow(QMainWindow):
             self.overlay_toolbar.status_label.setText(
                 "Débordement confirmé : utilisez Annuler dans Heartopia, puis reprenez"
             )
+            self.overlay_toolbar.set_resume_available(True)
             return
         if self.plan and self._resume_pixels:
             percent = round(self._resume_pixels * 100 / max(1, self.plan.pixel_count))
@@ -1438,10 +1619,14 @@ class MainWindow(QMainWindow):
             self.overlay_toolbar.status_label.setText(
                 f"Point de reprise conservé : {self._resume_pixels}/{self.plan.pixel_count} pixels"
             )
+            self.overlay_toolbar.set_resume_available(True)
             return
         self.overlay_toolbar.start_button.setText("Démarrer")
+        self.overlay_toolbar.set_resume_available(False)
 
     def _automation_failed(self, details: str) -> None:
+        self._force_continue_unlocked = True
+        self.force_continue_checkbox.setEnabled(True)
         if self._run_mode == "draw" and isinstance(self.runner, AutomationRunner):
             self._resume_pixels = max(self._resume_pixels, self.runner.painted_pixels)
             self._resume_fill_mode = isinstance(
@@ -1476,15 +1661,28 @@ class MainWindow(QMainWindow):
         )
         issue_title, recovery_steps = self._failure_guidance(details)
         self.overlay_toolbar.set_running(False)
-        QMessageBox.critical(
-            self.overlay_toolbar,
-            f"Mise en sécurité — {issue_title}",
+        dialog = QMessageBox(self.overlay_toolbar)
+        dialog.setIcon(QMessageBox.Icon.Critical)
+        dialog.setWindowTitle(f"Mise en sécurité — {issue_title}")
+        dialog.setText(
             f"Pourquoi Dessinopia s'est mis en sécurité :\n{details}\n\n"
             f"Comment reprendre rapidement :\n{recovery_steps}{checkpoint}\n\n"
             "Le point de reprise s'arrête à la dernière opération entièrement validée. "
-            "L'opération incertaine sera contrôlée ou rejouée, jamais ignorée."
+            "Le mode Sans échec est maintenant débloqué pour forcer les contrôles "
+            "non concluants lors de la reprise."
             f"{log_hint}",
         )
+        force_button = dialog.addButton(
+            "Activer Sans échec pour la reprise",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        dialog.addButton(QMessageBox.StandardButton.Ok)
+        dialog.exec()
+        if dialog.clickedButton() is force_button:
+            self.force_continue_checkbox.setChecked(True)
+            self.overlay_toolbar.status_label.setText(
+                "Mode Sans échec armé — cliquez sur Reprendre"
+            )
 
     @staticmethod
     def _failure_guidance(details: str) -> tuple[str, str]:
@@ -1934,6 +2132,54 @@ class MainWindow(QMainWindow):
         self.converted_preview.set_grid_visible(checked)
         self.settings.show_grid = checked
         self.store.save(self.settings)
+
+    def _fill_mode_changed(self, checked: bool) -> None:
+        """Rebuild the hybrid plan immediately when the checkbox changes."""
+
+        self._settings_changed()
+        if (
+            self.result is None
+            or self.plan is None
+            or not self._conversion_is_current()
+            or self._automation_is_active()
+        ):
+            return
+        self.hybrid_plan = build_hybrid_fill_plan(
+            self.result.indices,
+            enable_fill=checked,
+        )
+        self._resume_pixels = 0
+        self._resume_fill_mode = None
+        self._manual_recovery_required = False
+        self._restore_resume_journal()
+        self._update_resume_ui()
+        self._update_plan_summary()
+        if checked and self.hybrid_plan.has_fills:
+            metrics = self.hybrid_plan.metrics
+            self.status_label.setText(
+                f"Remplissage sécurisé actif · {metrics.fill_clicks} zones prévues · "
+                f"{metrics.saved_pixel_actions} gestes pixel évités."
+            )
+        elif checked:
+            self.status_label.setText(
+                "Remplissage actif, mais aucune zone assez grande et fermée n'a été trouvée."
+            )
+        else:
+            self.status_label.setText("Remplissage désactivé · plan crayon recalculé.")
+
+    def _force_mode_active(self) -> bool:
+        return (
+            self._force_continue_unlocked
+            and self.force_continue_checkbox.isChecked()
+        )
+
+    def _force_mode_changed(self, checked: bool) -> None:
+        if checked and self._force_continue_unlocked:
+            self.status_label.setText(
+                "Mode Sans échec armé · les contrôles non concluants seront forcés."
+            )
+        elif not checked and self._force_continue_unlocked:
+            self.status_label.setText("Mode Sans échec désactivé · contrôles normaux restaurés.")
 
     def _settings_changed(self) -> None:
         self._update_grid_label()

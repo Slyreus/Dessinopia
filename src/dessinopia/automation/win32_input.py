@@ -47,6 +47,7 @@ SM_YVIRTUALSCREEN = 77
 SM_CXVIRTUALSCREEN = 78
 SM_CYVIRTUALSCREEN = 79
 VK_F12 = 0x7B
+VK_F8 = 0x77
 
 
 class _EmergencyKeyWatcher:
@@ -93,6 +94,52 @@ class _EmergencyKeyWatcher:
             self._requested.set()
 
 
+class _ToggleKeyWatcher:
+    """Latch one press until the automation reaches a pause-safe boundary."""
+
+    def __init__(
+        self,
+        poll_key_state: Callable[[], int],
+        *,
+        interval: float = 0.008,
+    ) -> None:
+        self._poll_key_state = poll_key_state
+        self._interval = interval
+        initial = int(self._poll_key_state())
+        self._was_down = bool(initial & 0x8000)
+        self._requested = threading.Event()
+        self._closed = threading.Event()
+        self._thread = threading.Thread(
+            target=self._watch,
+            name="Dessinopia-F8-Pause",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def consume(self) -> bool:
+        self._sample()
+        if not self._requested.is_set():
+            return False
+        self._requested.clear()
+        return True
+
+    def close(self) -> None:
+        self._closed.set()
+        if self._thread is not threading.current_thread():
+            self._thread.join(timeout=0.1)
+
+    def _watch(self) -> None:
+        while not self._closed.wait(self._interval):
+            self._sample()
+
+    def _sample(self) -> None:
+        state = int(self._poll_key_state())
+        down = bool(state & 0x8000)
+        if (state & 0x0001) or (down and not self._was_down):
+            self._requested.set()
+        self._was_down = down
+
+
 def _normalize_absolute_coordinate(value: float, origin: int, extent: int) -> int:
     """Convertit un pixel du bureau virtuel en coordonnée SendInput.
 
@@ -126,9 +173,15 @@ class Win32Mouse:
         self._emergency = _EmergencyKeyWatcher(
             lambda: int(self.user32.GetAsyncKeyState(VK_F12))
         )
+        self._pause_toggle = _ToggleKeyWatcher(
+            lambda: int(self.user32.GetAsyncKeyState(VK_F8))
+        )
 
     def emergency_stop_requested(self) -> bool:
         return self._emergency.requested()
+
+    def pause_toggle_requested(self) -> bool:
+        return self._pause_toggle.consume()
 
     @property
     def left_is_down(self) -> bool:
@@ -209,4 +262,7 @@ class Win32Mouse:
         except InputInjectionError:
             self._left_is_down = False
         finally:
-            self._emergency.close()
+            try:
+                self._emergency.close()
+            finally:
+                self._pause_toggle.close()

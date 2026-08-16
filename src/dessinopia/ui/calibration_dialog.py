@@ -264,4 +264,6 @@ class CalibrationDialog(QDialog):
             ),
             confidence=1.0,
             source="manual",
+            reference_left=self.profile.reference_left,
+            reference_top=self.profile.reference_top,
         )

@@ -69,6 +69,7 @@ class FillOperation:
     expected_cells: tuple[Cell, ...]
     required_fence: tuple[Cell, ...]
     guard_cells: tuple[Cell, ...]
+    fence_strokes: tuple[Stroke, ...]
     fallback_strokes: tuple[Stroke, ...]
     repair_strokes: tuple[Stroke, ...]
     verified_connectivity_4: bool = True
@@ -365,6 +366,13 @@ def build_hybrid_fill_plan(
                             expected_cells=region,
                             required_fence=item.boundary,
                             guard_cells=guard_cells,
+                            fence_strokes=_fallback_strokes(
+                                item.boundary,
+                                palette_index,
+                                width,
+                                height,
+                                item.component_id,
+                            ),
                             fallback_strokes=_fallback_strokes(
                                 region,
                                 palette_index,
@@ -586,13 +594,22 @@ def _regions_from_cells(
 def _component_boundary(
     cells: tuple[Cell, ...], width: int, height: int
 ) -> tuple[Cell, ...]:
+    """Return a fence thick enough to contain both plausible bucket behaviours.
+
+    Heartopia's exact flood connectivity is not documented. A four-neighbour
+    outline can leave diagonal passages around stair-stepped or curved shapes,
+    which made most real image components fail the eight-neighbour safety proof.
+    Keeping every cell exposed in any of the eight directions closes those
+    passages while leaving the largest safe interior available to the bucket.
+    """
+
     coordinates = {(cell.column, cell.row) for cell in cells}
     boundary = []
     for cell in cells:
         if any(
             not (0 <= cell.column + dx < width and 0 <= cell.row + dy < height)
             or (cell.column + dx, cell.row + dy) not in coordinates
-            for dx, dy in _NEIGHBOURS[4]
+            for dx, dy in _NEIGHBOURS[8]
         ):
             boundary.append(cell)
     return tuple(sorted(boundary, key=_cell_key))

@@ -44,6 +44,8 @@ class AutomationStopped(RuntimeError):
 class MouseController(Protocol):
     def emergency_stop_requested(self) -> bool: ...
 
+    def pause_toggle_requested(self) -> bool: ...
+
     def move_to(self, point: Point, duration: float = 0.0) -> None: ...
 
     def click(self) -> None: ...
@@ -79,6 +81,7 @@ class AutomationRunner:
         mouse_factory: Callable[[Callable[[], None]], MouseController] | None = None,
         seed: int | None = None,
         resume_from_pixels: int = 0,
+        force_verification_failures: bool = False,
     ) -> None:
         self.plan = plan
         self.calibration = calibration
@@ -90,6 +93,7 @@ class AutomationRunner:
         self.mouse_factory = mouse_factory or (lambda checkpoint: Win32Mouse(checkpoint=checkpoint))
         self.random = Random(seed)
         self.resume_from_pixels = resume_from_pixels
+        self.force_verification_failures = force_verification_failures
         self._validate_resume_point()
         self._stop = threading.Event()
         self._run_gate = threading.Event()
@@ -253,6 +257,11 @@ class AutomationRunner:
 
             observation = self._last_palette_observation
             if observation is None or observation.state is PaletteState.UNKNOWN:
+                if self.force_verification_failures:
+                    self.callbacks.status(
+                        f"Mode Sans échec — famille « {family_name} » supposée ouverte"
+                    )
+                    return
                 raise RuntimeError(
                     f"La famille « {family_name} » reste illisible après "
                     f"{self._palette_read_attempts} contrôles de trois captures. "
@@ -273,6 +282,11 @@ class AutomationRunner:
             if observation.state is PaletteState.SHADES:
                 self._click_at(self.calibration.back_button, palette_delay=True)
 
+        if self.force_verification_failures:
+            self.callbacks.status(
+                f"Mode Sans échec — dernière sélection « {family_name} » conservée"
+            )
+            return
         restored = self._restore_main_palette_after_failure(family_name)
         recovery_message = (
             "La palette principale a été restaurée"
@@ -418,6 +432,11 @@ class AutomationRunner:
     def _validate_tool_markers(self) -> None:
         error = tool_marker_geometry_error(self.calibration)
         if error is not None:
+            if self.force_verification_failures:
+                self.callbacks.status(
+                    f"Mode Sans échec — géométrie des outils acceptée : {error}"
+                )
+                return
             raise RuntimeError(f"Calibration des outils refusée : {error}")
 
     def _select_and_verify_pencil(self) -> None:
@@ -442,6 +461,11 @@ class AutomationRunner:
                 "Crayon non confirmé — nouvelle sélection "
                 f"({attempt}/{self._tool_selection_attempts})"
             )
+        if self.force_verification_failures:
+            self.callbacks.status(
+                "Mode Sans échec — dernier clic Crayon accepté sans confirmation"
+            )
+            return
         raise RuntimeError(
             "Le crayon n'a pas pu être confirmé après trois sélections. "
             "Aucun clic n'a été envoyé sur la toile."
@@ -473,6 +497,11 @@ class AutomationRunner:
             self.callbacks.status(
                 f"{color.name} non confirmée — nouvelle sélection ({attempt}/3)"
             )
+        if self.force_verification_failures:
+            self.callbacks.status(
+                f"Mode Sans échec — nuance « {color.name} » acceptée sans confirmation"
+            )
+            return
         raise RuntimeError(
             f"La nuance « {color.name} » n'a pas pu être confirmée après trois essais. "
             "Aucun pixel de cette nuance n'a été envoyé sur la toile. Vérifiez son contour "
@@ -491,12 +520,27 @@ class AutomationRunner:
 
     def _checkpoint(self) -> None:
         self._motion_checkpoint()
+        self._handle_pause_hotkey()
         # Event.wait() sans timeout rendrait F12 inopérant tant que le runner est
         # en pause. Le bouton Arrêter réveille explicitement la porte, mais l'arrêt
         # d'urgence doit rester global et ne pas dépendre de l'interface Qt.
         while not self._run_gate.wait(timeout=0.05):
             self._motion_checkpoint()
+            self._handle_pause_hotkey()
         self._motion_checkpoint()
+
+    def _handle_pause_hotkey(self) -> None:
+        if self._mouse is None or not self._mouse.pause_toggle_requested():
+            return
+        with self._state_lock:
+            if self._state is AutomationState.RUNNING:
+                self._run_gate.clear()
+                self._set_state(AutomationState.PAUSED)
+                self.callbacks.status("Pause demandée avec F8")
+            elif self._state is AutomationState.PAUSED:
+                self._run_gate.set()
+                self._set_state(AutomationState.RUNNING)
+                self.callbacks.status("Reprise demandée avec F8")
 
     def _motion_checkpoint(self) -> None:
         if self._stop.is_set():
