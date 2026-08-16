@@ -15,6 +15,8 @@ puis lancez `Dessinopia.exe`.
 - conversion vers les formats et définitions disponibles dans Heartopia ;
 - palette de 125 couleurs, avec Floyd–Steinberg et tramage ordonné facultatifs ;
 - overlay transparent et calibration visuelle directement sur le jeu ;
+- détection et ouverture de l’overlay réunies, avec repères ajustables même sans détection ;
+- bandeau horizontal compact, centré en haut et visible en partage d’écran complet ;
 - détection automatique de la toile, des palettes, des nuances et des outils ;
 - adaptation automatique des repères sauvegardés à la résolution et à la position de l’écran ;
 - dessin par traits continus, regroupé par couleur et par zone connexe ;

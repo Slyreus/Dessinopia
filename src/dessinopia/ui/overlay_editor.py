@@ -269,7 +269,7 @@ class CalibrationOverlayEditor(QWidget):
             float(geometry.height()),
         )
         self.setGeometry(geometry)
-        self.panel.move(18, 18)
+        self.panel.move(max(8, (self.width() - self.panel.width()) // 2), 8)
         self._update_coordinates()
         self.update()
 
@@ -336,12 +336,13 @@ class CalibrationOverlayEditor(QWidget):
         super().showEvent(event)
         if sys.platform == "win32":
             with suppress(AttributeError, OSError):
-                ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()), 0x00000011)
+                # The editor is meant to be visible to friends during screen sharing.
+                ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()), 0x00000000)
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
         self.panel.adjustSize()
-        self.panel.move(18, 18)
+        self.panel.move(max(8, (self.width() - self.panel.width()) // 2), 8)
 
     def paintEvent(self, _event) -> None:  # type: ignore[no-untyped-def]
         if self.profile is None or not self._mapping_available():

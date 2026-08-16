@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -20,11 +21,30 @@ from dessinopia.core.models import CalibrationProfile, CanvasSize, ScreenRect
 from dessinopia.core.screen_geometry import map_rect_between_spaces, qt_geometry_to_physical
 from dessinopia.vision.capture import native_monitors
 
+WDA_NONE = 0x00000000
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+
+def _set_capture_excluded(window_id: int | None, excluded: bool) -> None:
+    """Control capture visibility without changing the on-screen overlay.
+
+    Overlays stay shareable by default.  Internal computer-vision screenshots can
+    exclude them for the few milliseconds needed to read Heartopia, then restore
+    normal screen-sharing visibility immediately afterwards.
+    """
+
+    if sys.platform != "win32" or window_id is None:
+        return
+    affinity = WDA_EXCLUDEFROMCAPTURE if excluded else WDA_NONE
+    with suppress(AttributeError, OSError):
+        ctypes.windll.user32.SetWindowDisplayAffinity(window_id, affinity)
+
 
 class GridOverlay(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.profile: CalibrationProfile | None = None
+        self._capture_hwnd: int | None = None
         self.canvas_size: CanvasSize | None = None
         self.target_screen = None
         self._target_physical_bounds: ScreenRect | None = None
@@ -90,10 +110,11 @@ class GridOverlay(QWidget):
 
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().showEvent(event)
-        if sys.platform == "win32":
-            # Empêche l'overlay d'apparaître dans les captures utilisées pour la détection.
-            with suppress(AttributeError, OSError):
-                ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()), 0x00000011)
+        self._capture_hwnd = int(self.winId())
+        _set_capture_excluded(self._capture_hwnd, False)
+
+    def set_capture_excluded(self, excluded: bool) -> None:
+        _set_capture_excluded(self._capture_hwnd, excluded)
 
     def paintEvent(self, _event) -> None:  # type: ignore[no-untyped-def]
         if not self.profile or not self.canvas_size:
@@ -154,6 +175,7 @@ class OverlayToolbar(QFrame):
     def __init__(self) -> None:
         super().__init__()
         self._drag_offset = None
+        self._capture_hwnd: int | None = None
         self._active = False
         self._resume_available = False
         self.setWindowFlags(
@@ -168,31 +190,40 @@ class OverlayToolbar(QFrame):
             "border: 1px solid #47766d; border-radius: 14px; }"
         )
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(7)
+        layout.setContentsMargins(10, 7, 10, 7)
+        layout.setSpacing(5)
         header = QHBoxLayout()
+        header.setSpacing(8)
         title = QLabel("Dessinopia")
-        title.setStyleSheet("font-size: 15px; font-weight: 750; color: white;")
+        title.setStyleSheet("font-size: 14px; font-weight: 750; color: white;")
         self.state_label = QLabel("Prêt")
         self.state_label.setObjectName("statusPill")
+        self.status_label = QLabel("Vérifiez les repères puis lancez le dessin")
+        self.status_label.setObjectName("muted")
+        self.status_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setFixedWidth(150)
+        self.progress.setFixedHeight(18)
+        emergency = QLabel("F8 pause/reprise · F12 urgence")
+        emergency.setStyleSheet("color: #ffb7c9; font-weight: 700;")
         close = QPushButton("×")
-        close.setFixedSize(30, 30)
+        close.setFixedSize(28, 28)
         close.setStyleSheet("padding: 0; font-size: 18px; font-weight: 700;")
         close.clicked.connect(self.close_requested)
         header.addWidget(title)
-        header.addStretch()
         header.addWidget(self.state_label)
+        header.addWidget(self.status_label, 1)
+        header.addWidget(self.progress)
+        header.addWidget(emergency)
         header.addWidget(close)
         layout.addLayout(header)
 
-        self.status_label = QLabel("Vérifiez les repères puis lancez le dessin")
-        self.status_label.setObjectName("muted")
-        layout.addWidget(self.status_label)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        layout.addWidget(self.progress)
-
         buttons = QHBoxLayout()
+        buttons.setSpacing(6)
         self.start_button = QPushButton("Démarrer")
         self.start_button.setObjectName("primary")
         self.pause_button = QPushButton("Pause")
@@ -203,32 +234,31 @@ class OverlayToolbar(QFrame):
         self.test_button.setToolTip(
             "Peindre temporairement les quatre coins et le centre avant le dessin"
         )
-        self.calibration_button = QPushButton("Repères détectés")
+        self.calibration_button = QPushButton("Repères")
         self.calibration_button.setToolTip(
             "Afficher tous les boutons détectés et les ajuster directement sur le jeu"
+        )
+        self.repair_button = QPushButton("Réparer les trous")
+        self.repair_button.setToolTip(
+            "Rechercher les cellules encore ivoire et les repeindre en mode prudent"
+        )
+        self.reset_button = QPushButton("Réinitialiser")
+        self.reset_button.setToolTip(
+            "Abandonner le checkpoint et recommencer le plan depuis zéro"
         )
         for button in (
             self.start_button,
             self.pause_button,
             self.resume_button,
             self.stop_button,
+            self.test_button,
+            self.calibration_button,
+            self.repair_button,
+            self.reset_button,
         ):
+            button.setMinimumHeight(28)
             buttons.addWidget(button)
         layout.addLayout(buttons)
-        setup_buttons = QHBoxLayout()
-        setup_buttons.addWidget(self.test_button)
-        setup_buttons.addWidget(self.calibration_button)
-        layout.addLayout(setup_buttons)
-        self.repair_button = QPushButton("Auditer et réparer les trous")
-        self.repair_button.setToolTip(
-            "Rechercher les cellules encore ivoire et les repeindre en mode prudent"
-        )
-        layout.addWidget(self.repair_button)
-        self.reset_button = QPushButton("Réinitialiser la reprise")
-        self.reset_button.setToolTip(
-            "Abandonner le checkpoint et recommencer le plan depuis zéro"
-        )
-        layout.addWidget(self.reset_button)
         self.start_button.clicked.connect(self.start_requested)
         self.test_button.clicked.connect(self.test_requested)
         self.pause_button.clicked.connect(self.pause_requested)
@@ -237,20 +267,25 @@ class OverlayToolbar(QFrame):
         self.stop_button.clicked.connect(self.stop_requested)
         self.calibration_button.clicked.connect(self.calibrate_requested)
         self.repair_button.clicked.connect(self.repair_requested)
-        emergency = QLabel("F8 : pause / reprendre · F12 : arrêt d’urgence")
-        emergency.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        emergency.setStyleSheet("color: #ffb7c9; font-weight: 700;")
-        layout.addWidget(emergency)
         self.set_running(False)
         self.adjustSize()
 
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().showEvent(event)
-        if sys.platform == "win32":
-            # The toolbar is interactive but must not contaminate vision captures if the
-            # user has dragged it over the game UI.
-            with suppress(AttributeError, OSError):
-                ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()), 0x00000011)
+        self._capture_hwnd = int(self.winId())
+        _set_capture_excluded(self._capture_hwnd, False)
+
+    def set_capture_excluded(self, excluded: bool) -> None:
+        _set_capture_excluded(self._capture_hwnd, excluded)
+
+    def place_at_top_center(self, screen_geometry) -> None:  # type: ignore[no-untyped-def]
+        """Use a wide, shallow strip that does not cover the canvas on small screens."""
+
+        target_width = max(320, min(1160, screen_geometry.width() - 24))
+        self.setFixedWidth(target_width)
+        self.adjustSize()
+        x = screen_geometry.left() + max(0, (screen_geometry.width() - self.width()) // 2)
+        self.move(x, screen_geometry.top() + 8)
 
     def set_running(self, running: bool, paused: bool = False, stopping: bool = False) -> None:
         active = running or stopping

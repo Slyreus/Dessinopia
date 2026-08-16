@@ -189,15 +189,18 @@ class MainWindow(QMainWindow):
         header.addStretch()
         self.detection_label = QLabel("Heartopia non calibré")
         self.detection_label.setObjectName("statusPill")
-        detect_button = QPushButton("Détecter Heartopia")
-        detect_button.clicked.connect(self.detect_heartopia)
+        self.overlay_button = QPushButton("Détecter / afficher l'overlay")
+        self.overlay_button.setToolTip(
+            "Tenter la détection puis ouvrir l'overlay, même avec des repères à ajuster"
+        )
+        self.overlay_button.clicked.connect(self.show_overlay)
         calibration_button = QPushButton("Ajuster sur l’overlay")
         calibration_button.clicked.connect(self.open_calibration)
         numeric_button = QPushButton("Valeurs…")
         numeric_button.setToolTip("Réglage numérique avancé de la calibration")
         numeric_button.clicked.connect(self.open_numeric_calibration)
         header.addWidget(self.detection_label)
-        header.addWidget(detect_button)
+        header.addWidget(self.overlay_button)
         header.addWidget(calibration_button)
         header.addWidget(numeric_button)
         root.addLayout(header)
@@ -339,14 +342,12 @@ class MainWindow(QMainWindow):
         self.stats_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.stats_label)
         action_row = QHBoxLayout()
-        self.overlay_button = QPushButton("Afficher l'overlay")
-        self.overlay_button.setEnabled(False)
-        self.overlay_button.clicked.connect(self.show_overlay)
         self.export_button = QPushButton("Exporter l'aperçu PNG")
         self.export_button.setEnabled(False)
         self.export_button.clicked.connect(self.export_preview)
-        action_row.addWidget(self.overlay_button)
+        action_row.addStretch()
         action_row.addWidget(self.export_button)
+        action_row.addStretch()
         layout.addLayout(action_row)
         return frame
 
@@ -666,7 +667,19 @@ class MainWindow(QMainWindow):
             Image.fromarray(self.result.preview_rgba, "RGBA").save(path)
             self.status_label.setText(f"Aperçu exporté : {path}")
 
-    def detect_heartopia(self) -> bool:
+    def _grab_for_vision(self, bounds):  # type: ignore[no-untyped-def]
+        """Capture Heartopia without permanently hiding the overlay from streams."""
+
+        windows = (self.overlay, self.overlay_toolbar)
+        for window in windows:
+            window.set_capture_excluded(True)
+        try:
+            return self.capture.grab(bounds)
+        finally:
+            for window in windows:
+                window.set_capture_excluded(False)
+
+    def detect_heartopia(self, *, show_warning: bool = True) -> bool:
         if self._automation_is_active():
             self.status_label.setText(
                 "Détection différée : arrêtez ou terminez le dessin avant de recalibrer."
@@ -676,7 +689,7 @@ class MainWindow(QMainWindow):
         profile = None
         try:
             if window:
-                screenshot = self.capture.grab(window.rect)
+                screenshot = self._grab_for_vision(window.rect)
                 expected = self._expected_canvas_for_capture(window.rect, screenshot)
                 profile = self.detector.auto_profile(
                     screenshot,
@@ -688,7 +701,7 @@ class MainWindow(QMainWindow):
                 monitors = self.capture.monitor_bounds()
                 regions = monitors or (self.capture.virtual_bounds(),)
                 for bounds in regions:
-                    screenshot = self.capture.grab(bounds)
+                    screenshot = self._grab_for_vision(bounds)
                     expected = self._expected_canvas_for_capture(bounds, screenshot)
                     candidate = self.detector.auto_profile(
                         screenshot,
@@ -700,17 +713,19 @@ class MainWindow(QMainWindow):
                     if profile is None or candidate.confidence > profile.confidence:
                         profile = candidate
         except Exception as exc:
-            QMessageBox.warning(self, "Capture impossible", str(exc))
+            if show_warning:
+                QMessageBox.warning(self, "Capture impossible", str(exc))
             return False
         if profile is None:
             self.detection_label.setText("Détection à ajuster")
-            QMessageBox.warning(
-                self,
-                "Toile non détectée",
-                "Ouvrez Heartopia en mode fenêtré sans bordure, affichez une toile "
-                "avec son cadre complet, puis réessayez. "
-                "Vous pouvez aussi utiliser la calibration manuelle.",
-            )
+            if show_warning:
+                QMessageBox.warning(
+                    self,
+                    "Toile non détectée",
+                    "Ouvrez Heartopia en mode fenêtré sans bordure, affichez une toile "
+                    "avec son cadre complet, puis réessayez. "
+                    "Vous pouvez aussi utiliser la calibration manuelle.",
+                )
             return False
         self.settings.calibration = profile
         self.store.save(self.settings)
@@ -833,21 +848,53 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def show_overlay(self) -> None:
-        if not self.result or not self.plan:
+        if self._automation_is_active():
+            self.status_label.setText(
+                "L'overlay est déjà utilisé par l'automatisation en cours."
+            )
             return
-        if not self._conversion_is_current():
+        if self.result is not None and not self._conversion_is_current():
             self.status_label.setText(
                 "Le format de conversion a changé : reconvertissez l'image avant l'overlay."
             )
             return
-        if not self.settings.calibration and not self.detect_heartopia():
+        detected = self.detect_heartopia(show_warning=False)
+        fallback_created = False
+        if not detected and self.settings.calibration is None:
+            profile = self._calibration_profile_for_editing()
+            if profile is None:
+                self.status_label.setText(
+                    "Impossible de préparer les repères de référence pour l'overlay."
+                )
+                return
+            self.settings.calibration = profile
+            fallback_created = True
+            self.detection_label.setText("Repères de référence à ajuster")
+        if self.settings.calibration is None:
             return
         self._refresh_overlay()
         self.overlay.show()
         self.overlay_toolbar.show()
         target_screen = self.overlay.target_screen or self.screen()
         screen = target_screen.availableGeometry()
-        self.overlay_toolbar.move(screen.left() + 20, screen.top() + 20)
+        self.overlay_toolbar.place_at_top_center(screen)
+        self.overlay_toolbar.raise_()
+        ready = self.result is not None and self.plan is not None
+        self.overlay_toolbar.start_button.setEnabled(ready)
+        self.overlay_toolbar.test_button.setEnabled(ready)
+        self.overlay_toolbar.repair_button.setEnabled(ready)
+        if detected:
+            self.overlay_toolbar.status_label.setText(
+                "Heartopia détecté · vérifiez les repères avant de démarrer"
+            )
+        elif fallback_created:
+            self.overlay_toolbar.status_label.setText(
+                "Toile non reconnue · repères de référence affichés et ajustables"
+            )
+        else:
+            self.overlay_toolbar.status_label.setText(
+                "Détection non concluante · repères sauvegardés conservés"
+            )
         self.showMinimized()
 
     def _refresh_overlay(self) -> None:
@@ -1804,7 +1851,7 @@ class MainWindow(QMainWindow):
             bounds = monitor_containing_point(monitors, active_calibration.canvas.center)
             if bounds is None:
                 bounds = self.capture.virtual_bounds()
-        image = self.capture.grab(bounds)
+        image = self._grab_for_vision(bounds)
         profile = localize_profile(
             active_calibration,
             bounds,
@@ -2189,9 +2236,7 @@ class MainWindow(QMainWindow):
                 self.status_label.setText("Paramètres d'exécution enregistrés.")
             else:
                 self.status_label.setText("Paramètres modifiés — cliquez sur Convertir.")
-        self.overlay_button.setEnabled(
-            self.result is not None and self._conversion_is_current()
-        )
+        self.overlay_button.setEnabled(not self._automation_is_active())
 
     def _persist_controls(self) -> None:
         self.settings.ratio = AspectRatio(self.ratio_combo.currentData())

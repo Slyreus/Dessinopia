@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-__version__ = "1.0.0b4"
-__display_version__ = "1.0.0 Beta 4"
+__version__ = "1.0.0b5"
+__display_version__ = "1.0.0 Beta 5"
 __author__ = "Slyreus"
