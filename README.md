@@ -13,7 +13,8 @@ puis lancez `Dessinopia.exe`.
 ## Fonctionnalités
 
 - conversion vers les formats et définitions disponibles dans Heartopia ;
-- palette de 125 couleurs, avec Floyd–Steinberg et tramage ordonné facultatifs ;
+- rendu « Pixels nets » ou lissé, taille réelle pour le pixel art et atténuation facultative des points isolés
+- palette réglable de 1 à 125 couleurs et intensité réglable pour les tramages Floyd–Steinberg et ordonné
 - overlay transparent et calibration visuelle directement sur le jeu ;
 - détection et ouverture de l’overlay réunies, avec repères ajustables même sans détection ;
 - bandeau horizontal compact, centré en haut et visible en partage d’écran complet ;
@@ -31,7 +32,7 @@ puis lancez `Dessinopia.exe`.
 ## Utilisation
 
 1. Ouvrez l’atelier de peinture dans Heartopia.
-2. Importez une image dans Dessinopia et choisissez son format.
+2. Importez une image et choisissez son format. Pour des contours francs, gardez **Pixels nets** et le tramage **Aucun**. Le mode **Taille réelle (1:1)** place chaque pixel source dans une seule case, avec un recadrage centré si l’image dépasse la toile. **Couleurs max.** limite la palette à 16 nuances par défaut. Après un changement, cliquez sur **Convertir l'image** pour actualiser l’aperçu.
 3. Cliquez sur **Détecter Heartopia**, puis vérifiez les repères sur l’overlay.
 4. Lancez le test des cinq points et confirmez l’alignement.
 5. Cliquez sur **Démarrer** et ne touchez plus à la souris pendant le dessin.

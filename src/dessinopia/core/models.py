@@ -24,12 +24,22 @@ class FitMode(StrEnum):
     CONTAIN = "Conserver l'image (marges)"
     COVER = "Remplir (recadrage centré)"
     STRETCH = "Étirer jusqu'au format"
+    NATIVE = "Taille réelle (1:1)"
+
+
+class ResizeMode(StrEnum):
+    PIXEL = "Pixels nets"
+    SMOOTH = "Lissé (Lanczos)"
 
 
 class DitherMode(StrEnum):
     NONE = "Aucun"
     FLOYD_STEINBERG = "Floyd–Steinberg"
     ORDERED = "Tramage ordonné"
+
+
+DEFAULT_MAX_COLORS = 16
+DEFAULT_DITHER_STRENGTH = 35
 
 
 @dataclass(frozen=True, slots=True)

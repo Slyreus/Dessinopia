@@ -22,7 +22,9 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSlider,
+    QSpinBox,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
@@ -64,6 +66,7 @@ from dessinopia.core.models import (
     DitherMode,
     FitMode,
     Precision,
+    ResizeMode,
     ScreenRect,
     canvas_size,
     reference_profile,
@@ -246,7 +249,19 @@ class MainWindow(QMainWindow):
         return frame, layout
 
     def _build_settings_card(self) -> QFrame:
-        frame, layout = self._card("1. Image et format")
+        frame, card = self._card("1. Image et format")
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 4, 0)
+        layout.setSpacing(9)
+        scroll.setWidget(body)
+        body.setAutoFillBackground(False)
+        scroll.viewport().setAutoFillBackground(False)
+        card.addWidget(scroll, 1)
         self.drop_area = ImageDropLabel()
         self.drop_area.file_dropped.connect(self.load_image)
         layout.addWidget(self.drop_area)
@@ -272,13 +287,47 @@ class MainWindow(QMainWindow):
         self.fit_combo = QComboBox()
         for mode in FitMode:
             self.fit_combo.addItem(mode.value, mode.value)
+        self.fit_combo.setToolTip(
+            "Taille réelle place un pixel de l’image dans une case. L’image est centrée, "
+            "avec des marges transparentes ou un recadrage si elle dépasse la toile."
+        )
         self.fit_combo.currentIndexChanged.connect(self._settings_changed)
         form.addRow("Adaptation", self.fit_combo)
+        self.resize_combo = QComboBox()
+        for mode in ResizeMode:
+            self.resize_combo.addItem(mode.value, mode.value)
+        self.resize_combo.setToolTip(
+            "Pixels nets conserve des bords francs. Lissé adoucit les transitions au redimensionnement."
+        )
+        self.resize_combo.currentIndexChanged.connect(self._settings_changed)
+        form.addRow("Rendu", self.resize_combo)
+        self.max_colors = QSpinBox()
+        self.max_colors.setRange(1, len(PALETTE))
+        self.max_colors.setToolTip(
+            f"Nombre maximal de nuances du jeu pour toute l’image, de 1 à {len(PALETTE)}."
+        )
+        self.max_colors.valueChanged.connect(self._settings_changed)
+        form.addRow("Couleurs max.", self.max_colors)
         self.dither_combo = QComboBox()
         for mode in DitherMode:
             self.dither_combo.addItem(mode.value, mode.value)
         self.dither_combo.currentIndexChanged.connect(self._settings_changed)
-        form.addRow("Tramage", self.dither_combo)
+        self.dither_strength = QSpinBox()
+        self.dither_strength.setRange(0, 100)
+        self.dither_strength.setSuffix(" %")
+        self.dither_strength.setAccessibleName("Intensité du tramage")
+        self.dither_strength.setToolTip("Intensité du tramage, de 0 à 100 %.")
+        self.dither_strength.valueChanged.connect(self._settings_changed)
+        dither_row = QHBoxLayout()
+        dither_row.addWidget(self.dither_combo, 1)
+        dither_row.addWidget(self.dither_strength)
+        form.addRow("Tramage", dither_row)
+        self.noise_checkbox = QCheckBox("Atténuer les points isolés")
+        self.noise_checkbox.setToolTip(
+            "Un point isolé prend la couleur de ses voisins si leurs nuances sont proches."
+        )
+        self.noise_checkbox.toggled.connect(self._settings_changed)
+        form.addRow(self.noise_checkbox)
         self.tempo_combo = QComboBox()
         self.tempo_combo.addItem("Très lent (anti-surcharge)", "tres_lent")
         self.tempo_combo.addItem("Lent", "lent")
@@ -322,11 +371,14 @@ class MainWindow(QMainWindow):
         self.force_continue_checkbox.toggled.connect(self._force_mode_changed)
         layout.addWidget(self.force_continue_checkbox)
         layout.addStretch()
+        scroll.setMinimumWidth(
+            body.minimumSizeHint().width() + scroll.verticalScrollBar().sizeHint().width()
+        )
         self.convert_button = QPushButton("Convertir l'image")
         self.convert_button.setObjectName("primary")
         self.convert_button.setEnabled(False)
         self.convert_button.clicked.connect(self.convert_image)
-        layout.addWidget(self.convert_button)
+        card.addWidget(self.convert_button)
         return frame
 
     def _build_preview_card(self) -> QFrame:
@@ -389,7 +441,11 @@ class MainWindow(QMainWindow):
             self.ratio_combo,
             self.precision_combo,
             self.fit_combo,
+            self.resize_combo,
+            self.max_colors,
             self.dither_combo,
+            self.dither_strength,
+            self.noise_checkbox,
             self.tempo_combo,
             self.alpha_slider,
             self.grid_checkbox,
@@ -400,7 +456,11 @@ class MainWindow(QMainWindow):
             self._select_combo(self.ratio_combo, self.settings.ratio)
             self._select_combo(self.precision_combo, self.settings.precision)
             self._select_combo(self.fit_combo, self.settings.fit_mode)
+            self._select_combo(self.resize_combo, self.settings.resize_mode)
+            self.max_colors.setValue(self.settings.max_colors)
             self._select_combo(self.dither_combo, self.settings.dither_mode)
+            self.dither_strength.setValue(self.settings.dither_strength)
+            self.noise_checkbox.setChecked(self.settings.reduce_noise)
             self._select_combo(self.tempo_combo, self.settings.tempo)
             self.alpha_slider.setValue(self.settings.alpha_threshold)
             self.grid_checkbox.setChecked(self.settings.show_grid)
@@ -408,6 +468,7 @@ class MainWindow(QMainWindow):
         finally:
             for control, was_blocked in zip(controls, previous_signal_states, strict=True):
                 control.blockSignals(was_blocked)
+        self._update_filter_controls()
         self.converted_preview.set_grid_visible(self.settings.show_grid)
         self.alpha_value.setText(str(self.alpha_slider.value()))
         self._update_grid_label()
@@ -574,7 +635,7 @@ class MainWindow(QMainWindow):
         self.stats_label.setText(
             f"{self.result.width} × {self.result.height} · "
             + (
-                f"{self.result.unique_colors} couleurs · "
+                f"{self.result.unique_colors} / {options.max_colors} couleurs · "
                 f"{self.result.painted_pixels:,} pixels à peindre"
             ).replace(",", " ")
         )
@@ -2154,7 +2215,11 @@ class MainWindow(QMainWindow):
         return ConversionOptions(
             size=self.current_canvas_size(),
             fit_mode=FitMode(self.fit_combo.currentData()),
+            resize_mode=ResizeMode(self.resize_combo.currentData()),
+            max_colors=self.max_colors.value(),
             dither_mode=DitherMode(self.dither_combo.currentData()),
+            dither_strength=self.dither_strength.value(),
+            reduce_noise=self.noise_checkbox.isChecked(),
             alpha_threshold=self.alpha_slider.value(),
         )
 
@@ -2231,18 +2296,29 @@ class MainWindow(QMainWindow):
     def _settings_changed(self) -> None:
         self._update_grid_label()
         self._persist_controls()
+        self._update_filter_controls()
         if self.source_path:
-            if self.result is not None and self._conversion_is_current():
+            current = self._conversion_is_current()
+            self.export_button.setEnabled(current)
+            if current:
                 self.status_label.setText("Paramètres d'exécution enregistrés.")
             else:
                 self.status_label.setText("Paramètres modifiés — cliquez sur Convertir.")
         self.overlay_button.setEnabled(not self._automation_is_active())
 
+    def _update_filter_controls(self) -> None:
+        self.resize_combo.setEnabled(self.settings.fit_mode is not FitMode.NATIVE)
+        self.dither_strength.setEnabled(self.settings.dither_mode is not DitherMode.NONE)
+
     def _persist_controls(self) -> None:
         self.settings.ratio = AspectRatio(self.ratio_combo.currentData())
         self.settings.precision = Precision(self.precision_combo.currentData())
         self.settings.fit_mode = FitMode(self.fit_combo.currentData())
+        self.settings.resize_mode = ResizeMode(self.resize_combo.currentData())
+        self.settings.max_colors = self.max_colors.value()
         self.settings.dither_mode = DitherMode(self.dither_combo.currentData())
+        self.settings.dither_strength = self.dither_strength.value()
+        self.settings.reduce_noise = self.noise_checkbox.isChecked()
         self.settings.tempo = self.tempo_combo.currentData()
         self.settings.timing = TIMING_PRESETS[self.settings.tempo]
         self.settings.alpha_threshold = self.alpha_slider.value()

@@ -7,18 +7,28 @@ from pathlib import Path
 from typing import Any
 
 from dessinopia.core.models import (
+    DEFAULT_DITHER_STRENGTH,
+    DEFAULT_MAX_COLORS,
     AspectRatio,
     CalibrationProfile,
     DitherMode,
     FitMode,
     Precision,
+    ResizeMode,
 )
+from dessinopia.core.palette import PALETTE
 from dessinopia.core.timing import TIMING_PRESETS, TimingProfile
 
 
 def settings_path() -> Path:
     base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
     return base / "Dessinopia" / "settings.json"
+
+
+def _bounded_int(value: Any, default: int, lower: int, upper: int) -> int:
+    if type(value) is not int:
+        return default
+    return min(upper, max(lower, value))
 
 
 @dataclass(slots=True)
@@ -33,13 +43,21 @@ class AppSettings:
     tempo: str = "equilibre"
     calibration: CalibrationProfile | None = None
     timing: TimingProfile = TimingProfile()
+    resize_mode: ResizeMode = ResizeMode.PIXEL
+    max_colors: int = DEFAULT_MAX_COLORS
+    dither_strength: int = DEFAULT_DITHER_STRENGTH
+    reduce_noise: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ratio": self.ratio.value,
             "precision": self.precision.value,
             "fit_mode": self.fit_mode.value,
+            "resize_mode": self.resize_mode.value,
+            "max_colors": self.max_colors,
             "dither_mode": self.dither_mode.value,
+            "dither_strength": self.dither_strength,
+            "reduce_noise": self.reduce_noise,
             "alpha_threshold": self.alpha_threshold,
             "show_grid": self.show_grid,
             "allow_fill": self.allow_fill,
@@ -55,11 +73,18 @@ class AppSettings:
         calibration = data.get("calibration")
         tempo = str(data.get("tempo", "equilibre"))
         timing_data = data.get("timing")
+        resize_mode = data.get("resize_mode", ResizeMode.PIXEL.value)
         return cls(
             ratio=AspectRatio(data.get("ratio", AspectRatio.LANDSCAPE_16_9.value)),
             precision=Precision(data.get("precision", Precision.SMALL.value)),
             fit_mode=FitMode(data.get("fit_mode", FitMode.CONTAIN.value)),
+            resize_mode=ResizeMode(resize_mode) if resize_mode in ResizeMode else ResizeMode.PIXEL,
+            max_colors=_bounded_int(data.get("max_colors"), DEFAULT_MAX_COLORS, 1, len(PALETTE)),
             dither_mode=DitherMode(data.get("dither_mode", DitherMode.NONE.value)),
+            dither_strength=_bounded_int(
+                data.get("dither_strength"), DEFAULT_DITHER_STRENGTH, 0, 100
+            ),
+            reduce_noise=bool(data.get("reduce_noise", True)),
             alpha_threshold=int(data.get("alpha_threshold", 96)),
             show_grid=bool(data.get("show_grid", True)),
             allow_fill=bool(data.get("allow_fill", False)),

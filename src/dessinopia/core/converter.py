@@ -7,7 +7,14 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from dessinopia.core.color_spaces import delta_e_ciede2000, srgb_to_lab
-from dessinopia.core.models import CanvasSize, DitherMode, FitMode
+from dessinopia.core.models import (
+    DEFAULT_DITHER_STRENGTH,
+    DEFAULT_MAX_COLORS,
+    CanvasSize,
+    DitherMode,
+    FitMode,
+    ResizeMode,
+)
 from dessinopia.core.palette import PALETTE, PALETTE_RGB
 
 
@@ -18,6 +25,16 @@ class ConversionOptions:
     dither_mode: DitherMode = DitherMode.NONE
     alpha_threshold: int = 96
     ordered_strength: float = 28.0
+    resize_mode: ResizeMode = ResizeMode.PIXEL
+    max_colors: int = DEFAULT_MAX_COLORS
+    dither_strength: int = DEFAULT_DITHER_STRENGTH
+    reduce_noise: bool = True
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.max_colors <= len(PALETTE):
+            raise ValueError(f"Le nombre de couleurs doit être compris entre 1 et {len(PALETTE)}.")
+        if not 0 <= self.dither_strength <= 100:
+            raise ValueError("L’intensité du tramage doit être comprise entre 0 et 100 %.")
 
 
 @dataclass(slots=True)
@@ -59,6 +76,10 @@ class ConversionResult:
 class ImageConverter:
     def __init__(self) -> None:
         self._palette_lab = srgb_to_lab(PALETTE_RGB)
+        self._all_colors = np.arange(len(PALETTE), dtype=np.int16)
+        self._palette_distances = delta_e_ciede2000(
+            self._palette_lab[:, None, :], self._palette_lab[None, :, :]
+        )
 
     def convert_path(self, path: str | Path, options: ConversionOptions) -> ConversionResult:
         with Image.open(path) as loaded:
@@ -74,13 +95,9 @@ class ImageConverter:
         # y compris lorsque l'utilisateur place le seuil sur zéro.
         opaque = (alpha > 0) & (alpha >= options.alpha_threshold)
 
-        if options.dither_mode is DitherMode.FLOYD_STEINBERG:
-            indices = self._floyd_steinberg(rgb, opaque)
-        else:
-            candidates = rgb.astype(np.float64)
-            if options.dither_mode is DitherMode.ORDERED:
-                candidates = self._ordered(candidates, options.ordered_strength)
-            indices = self._nearest_indices(candidates.astype(np.uint8), opaque)
+        indices = self._convert_colors(rgb, opaque, options)
+        if options.reduce_noise:
+            self._clean_isolated(indices)
 
         preview = np.zeros((*indices.shape, 4), dtype=np.uint8)
         preview[..., 3] = 0
@@ -97,12 +114,19 @@ class ImageConverter:
     @staticmethod
     def _prepare(image: Image.Image, options: ConversionOptions) -> Image.Image:
         target = (options.size.width, options.size.height)
+        if options.fit_mode is FitMode.NATIVE:
+            left = (image.width - target[0]) // 2
+            top = (image.height - target[1]) // 2
+            return image.crop((left, top, left + target[0], top + target[1]))
+        resample = (
+            Image.Resampling.NEAREST
+            if options.resize_mode is ResizeMode.PIXEL
+            else Image.Resampling.LANCZOS
+        )
         if options.fit_mode is FitMode.STRETCH:
-            return image.resize(target, Image.Resampling.LANCZOS)
+            return image.resize(target, resample)
         if options.fit_mode is FitMode.COVER:
-            return ImageOps.fit(
-                image, target, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5)
-            )
+            return ImageOps.fit(image, target, method=resample, centering=(0.5, 0.5))
 
         image_ratio = image.width / image.height
         target_ratio = target[0] / target[1]
@@ -117,11 +141,79 @@ class ImageConverter:
                 max(1, round(image.width / image.height * target[1])),
                 target[1],
             )
-        contained = image.resize(contained_size, Image.Resampling.LANCZOS)
+        contained = image.resize(contained_size, resample)
         output = Image.new("RGBA", target, (0, 0, 0, 0))
         position = ((target[0] - contained.width) // 2, (target[1] - contained.height) // 2)
         output.alpha_composite(contained, position)
         return output
+
+    def _convert_colors(
+        self, rgb: np.ndarray, opaque: np.ndarray, options: ConversionOptions
+    ) -> np.ndarray:
+        if not opaque.any():
+            return np.full(opaque.shape, -1, dtype=np.int16)
+
+        mode = options.dither_mode if options.dither_strength else DitherMode.NONE
+        colors = self._all_colors
+        if options.max_colors < len(PALETTE):
+            indices = self._nearest_indices(rgb, opaque, colors)
+            used, counts = np.unique(indices[opaque], return_counts=True)
+            if mode is DitherMode.NONE and used.size <= options.max_colors:
+                return indices
+            colors = self._select_colors(used, counts, options.max_colors)
+            if colors.size == 1:
+                indices[opaque] = colors[0]
+                return indices
+
+        strength = options.dither_strength / 100
+        if mode is DitherMode.FLOYD_STEINBERG:
+            return self._floyd_steinberg(rgb, opaque, colors, strength)
+        if mode is DitherMode.ORDERED:
+            rgb = self._ordered(rgb, options.ordered_strength * strength)
+        return self._nearest_indices(rgb, opaque, colors)
+
+    def _select_colors(self, used: np.ndarray, counts: np.ndarray, limit: int) -> np.ndarray:
+        if used.size <= limit:
+            # Le tramage peut employer les places libres pour les teintes voisines.
+            distance_to_used = self._palette_distances[used].min(axis=0)
+            return np.sort(np.argsort(distance_to_used, kind="stable")[:limit])
+        # Chaque choix réduit l'erreur perceptuelle cumulée. Le carré de la
+        # distance donne aussi du poids aux petits détails très contrastés.
+        errors = self._palette_distances[np.ix_(used, used)] ** 2 * counts[:, None]
+        best = np.full(used.size, np.inf)
+        selected = np.zeros(used.size, dtype=bool)
+        for _ in range(limit):
+            costs = np.minimum(best[:, None], errors).sum(axis=0)
+            costs[selected] = np.inf
+            choice = int(np.argmin(costs))
+            selected[choice] = True
+            best = np.minimum(best, errors[:, choice])
+        return used[selected]
+
+    def _clean_isolated(self, indices: np.ndarray) -> None:
+        height, width = indices.shape
+        padded = np.pad(indices, 1, constant_values=-1)
+        neighbors = np.stack(
+            [
+                padded[y : y + height, x : x + width]
+                for y in range(3)
+                for x in range(3)
+                if (y, x) != (1, 1)
+            ]
+        )
+        # Une majorité de cinq voisins sur huit contient forcément la médiane.
+        majority = np.partition(neighbors, 4, axis=0)[4]
+        isolated = (
+            (indices >= 0)
+            & (majority >= 0)
+            & ~np.any(neighbors == indices, axis=0)
+            & (np.count_nonzero(neighbors == majority, axis=0) >= 5)
+        )
+        # Conserver les accents contrastés, même lorsqu'ils ne font qu'un pixel.
+        original = indices[isolated]
+        replacement = majority[isolated]
+        close = self._palette_distances[original, replacement] <= 15
+        indices[isolated] = np.where(close, replacement, original)
 
     @staticmethod
     def _ordered(rgb: np.ndarray, strength: float) -> np.ndarray:
@@ -137,24 +229,29 @@ class ImageConverter:
         height, width = rgb.shape[:2]
         tiled = np.tile(bayer, ((height + 3) // 4, (width + 3) // 4))[:height, :width]
         offset = ((tiled + 0.5) / 16.0 - 0.5) * strength
-        return np.clip(rgb + offset[..., None], 0, 255)
+        return np.clip(rgb + offset[..., None], 0, 255).astype(np.uint8)
 
-    def _nearest_indices(self, rgb: np.ndarray, opaque: np.ndarray) -> np.ndarray:
+    def _nearest_indices(
+        self, rgb: np.ndarray, opaque: np.ndarray, colors: np.ndarray
+    ) -> np.ndarray:
         result = np.full(opaque.shape, -1, dtype=np.int16)
-        if not np.any(opaque):
-            return result
-        pixels_lab = srgb_to_lab(rgb[opaque])
+        unique_rgb, inverse = np.unique(rgb[opaque], axis=0, return_inverse=True)
+        pixels_lab = srgb_to_lab(unique_rgb)
+        palette_lab = self._palette_lab[colors]
         # Les lots gardent la consommation mémoire stable pour les grilles 150×150.
         nearest = np.empty(pixels_lab.shape[0], dtype=np.int16)
         for start in range(0, pixels_lab.shape[0], 4096):
             chunk = pixels_lab[start : start + 4096]
-            distances = delta_e_ciede2000(chunk[:, None, :], self._palette_lab[None, :, :])
-            nearest[start : start + len(chunk)] = np.argmin(distances, axis=1).astype(np.int16)
-        result[opaque] = nearest
+            distances = delta_e_ciede2000(chunk[:, None, :], palette_lab[None, :, :])
+            nearest[start : start + len(chunk)] = colors[np.argmin(distances, axis=1)]
+        result[opaque] = nearest[inverse]
         return result
 
-    def _floyd_steinberg(self, rgb: np.ndarray, opaque: np.ndarray) -> np.ndarray:
+    def _floyd_steinberg(
+        self, rgb: np.ndarray, opaque: np.ndarray, colors: np.ndarray, strength: float
+    ) -> np.ndarray:
         work = rgb.astype(np.float64)
+        palette_lab = self._palette_lab[colors]
         height, width = opaque.shape
         result = np.full((height, width), -1, dtype=np.int16)
 
@@ -167,10 +264,10 @@ class ImageConverter:
                     continue
                 current = np.clip(work[y, x], 0, 255)
                 lab = srgb_to_lab(current.reshape(1, 3))
-                distances = delta_e_ciede2000(lab, self._palette_lab)
-                palette_index = int(np.argmin(distances))
+                distances = delta_e_ciede2000(lab, palette_lab)
+                palette_index = int(colors[np.argmin(distances)])
                 result[y, x] = palette_index
-                error = current - PALETTE_RGB[palette_index].astype(np.float64)
+                error = (current - PALETTE_RGB[palette_index]) * strength
 
                 self._diffuse(work, opaque, x + direction, y, error, 7 / 16)
                 self._diffuse(work, opaque, x - direction, y + 1, error, 3 / 16)

@@ -27,7 +27,9 @@ class ImageDropLabel(QLabel):
         super().__init__("Glissez une image ici\nou cliquez sur Importer")
         self.setAcceptDrops(True)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(80)
+        self.setWordWrap(True)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setStyleSheet(
             "border: 1px dashed #4c6c65; border-radius: 12px; color: #8fa8a2; background: #111b19;"
         )
