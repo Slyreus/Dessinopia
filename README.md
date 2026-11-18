@@ -10,6 +10,17 @@ Téléchargez la dernière archive depuis les
 [releases GitHub](https://github.com/Slyreus/Dessinopia/releases), décompressez-la entièrement,
 puis lancez `Dessinopia.exe`.
 
+## Exemples de peintures
+
+Peintures réalisées avec Dessinopia et exposées dans Heartopia.
+
+[![Portrait parmi les fleurs dans Heartopia](docs/exemples/portrait-fleuri.jpg)](docs/exemples/portrait-fleuri.jpg)
+
+<p>
+  <a href="docs/exemples/portraits-sur-chevalets.jpg"><img src="docs/exemples/portraits-sur-chevalets.jpg" alt="Deux portraits en pixel art sur des chevalets" width="48%"></a>
+  <a href="docs/exemples/rayquaza-pixel-art.jpg"><img src="docs/exemples/rayquaza-pixel-art.jpg" alt="Rayquaza en pixel art sur une toile carrée" width="48%"></a>
+</p>
+
 ## Fonctionnalités
 
 - conversion vers les formats et définitions disponibles dans Heartopia ;
