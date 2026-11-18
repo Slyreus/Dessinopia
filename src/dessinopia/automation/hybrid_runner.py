@@ -18,7 +18,7 @@ from dessinopia.core.fill_planner import (
 )
 from dessinopia.core.models import CalibrationProfile
 from dessinopia.core.palette import PALETTE_BY_INDEX
-from dessinopia.core.path_planner import Stroke
+from dessinopia.core.path_planner import Cell, Stroke, build_continuous_strokes
 from dessinopia.core.timing import TimingProfile
 from dessinopia.vision.fill_verifier import FillCheck, FillCheckState
 from dessinopia.vision.palette_observer import PaletteObservation
@@ -39,11 +39,10 @@ FillVerifier = Callable[
 
 
 class HybridAutomationRunner(AutomationRunner):
-    """Execute a lossless pencil/bucket plan with physical safety checks.
+    """Execute a pencil/bucket plan with physical safety checks.
 
-    Progress is committed only at complete hybrid-operation boundaries. A pencil
-    fallback for one bucket operation is consequently atomic: interruption may
-    redraw cells, but it can never cause a logical cell to be skipped on resume.
+    Progress is committed only at complete hybrid-operation boundaries. Pencil
+    repairs are checked up to three times before committing the operation.
     """
 
     def __init__(
@@ -287,32 +286,17 @@ class HybridAutomationRunner(AutomationRunner):
 
     def _execute_fill_operation(self, operation: FillOperation) -> None:
         self._checkpoint()
-        before = self._verify_fill_operation(operation, FillVerificationPhase.BEFORE)
+        before, missing_cells = self._verify_fill_operation(
+            operation, FillVerificationPhase.BEFORE
+        )
         self._checkpoint()
         if before is FillCheckState.ALREADY_FILLED:
             self.callbacks.status("Zone déjà remplie — reprise validée sans nouveau clic")
             self._commit_pixels(operation.filled_pixel_count)
             return
         if before is FillCheckState.FALLBACK:
-            before = self._redraw_fence_and_recheck(operation)
-            if before is FillCheckState.ALREADY_FILLED:
-                self.callbacks.status(
-                    "Zone déjà remplie après reprise du contour — validation sans clic"
-                )
-                self._commit_pixels(operation.filled_pixel_count)
-                return
-            if before is FillCheckState.FALLBACK:
-                self.callbacks.status(
-                    "Frontière toujours incertaine — réparation complète au crayon"
-                )
-                self._repair_and_verify_atomically(operation)
-                return
-        if before is FillCheckState.OVERFLOW:
-            self.manual_recovery_required = True
-            raise RuntimeError(
-                "Une cellule extérieure porte déjà la couleur cible avant le "
-                "remplissage. Automatisation arrêtée pour éviter de masquer une fuite."
-            )
+            self._repair_and_verify_atomically(operation, missing_cells)
+            return
         if before is not FillCheckState.READY:
             raise RuntimeError(
                 "Le contrôle avant remplissage a renvoyé un état incohérent : "
@@ -327,14 +311,16 @@ class HybridAutomationRunner(AutomationRunner):
             self.plan.height,
         )
         self._click_at(seed, jitter=False)
-        after = self._verify_fill_operation(operation, FillVerificationPhase.AFTER)
+        after, missing_cells = self._verify_fill_operation(
+            operation, FillVerificationPhase.AFTER
+        )
         self._checkpoint()
         if after is FillCheckState.SUCCESS:
             self._commit_pixels(operation.filled_pixel_count)
             return
         if after is FillCheckState.INCOMPLETE:
             self.callbacks.status("Remplissage incomplet — finition atomique au crayon")
-            self._repair_and_verify_atomically(operation)
+            self._repair_and_verify_atomically(operation, missing_cells)
             return
         if after is FillCheckState.OVERFLOW:
             self.manual_recovery_required = True
@@ -347,50 +333,30 @@ class HybridAutomationRunner(AutomationRunner):
             "arrêtée avant toute autre action sur la toile."
         )
 
-    def _redraw_fence_and_recheck(self, operation: FillOperation) -> FillCheckState:
-        """Repair a missed contour without abandoning an otherwise safe bucket."""
-
-        self._ensure_tool(DrawingTool.PENCIL)
-        for attempt in range(1, 3):
-            self._select_and_verify_shade(operation.palette_index)
-            self.callbacks.status(
-                f"Contour incertain — reprise sécurisée de la frontière ({attempt}/2)"
-            )
-            for stroke in operation.fence_strokes:
-                self._trace_stroke(stroke)
-                self._sleep(self.timing.between_strokes_seconds)
-            self._checkpoint()
-            result = self._verify_fill_operation(
-                operation,
-                FillVerificationPhase.BEFORE,
-            )
-            self._checkpoint()
-            if result is not FillCheckState.FALLBACK:
-                return result
-        return FillCheckState.FALLBACK
-
     def _verify_fill_operation(
         self,
         operation: FillOperation,
         phase: FillVerificationPhase,
-    ) -> FillCheckState:
+    ) -> tuple[FillCheckState, tuple[Cell, ...] | None]:
         if self.verify_fill is None:
             return (
                 FillCheckState.READY
                 if phase is FillVerificationPhase.BEFORE
-                else FillCheckState.SUCCESS
+                else FillCheckState.SUCCESS,
+                None,
             )
+        self._move_cursor_off_canvas()
         result = self.verify_fill(operation, phase)
         if isinstance(result, FillCheck):
             self.callbacks.status(
                 f"Contrôle du remplissage {phase.value} — {result.summary}"
             )
-            return result.state
+            return result.state, result.missing_cells
         if isinstance(result, FillCheckState):
             self.callbacks.status(
                 f"Contrôle du remplissage {phase.value} — {result.value}"
             )
-            return result
+            return result, None
         raise TypeError("La vérification de remplissage a renvoyé un résultat invalide")
 
     def _draw_pencil_operation(self, operation: PencilOperation) -> None:
@@ -399,31 +365,29 @@ class HybridAutomationRunner(AutomationRunner):
         self._commit_pixels(operation.pixel_count)
         self._sleep(self.timing.between_strokes_seconds)
 
-    def _repair_and_verify_atomically(self, operation: FillOperation) -> None:
-        """Redraw the complete fence and interior, then prove the result.
-
-        A failed BEFORE check may mean that a previously committed fence stroke
-        was physically lost. Repainting only the interior would therefore leave
-        a wrong image. The repair strokes deliberately cover both the fence and
-        this fill region; only the still-uncommitted interior advances progress.
-        """
-
+    def _repair_and_verify_atomically(
+        self,
+        operation: FillOperation,
+        missing_cells: tuple[Cell, ...] | None,
+    ) -> None:
         self._ensure_tool(DrawingTool.PENCIL)
         for attempt in range(1, 4):
-            # A lost shade-selection click can be the reason the fence did not
-            # match. Reassert the exact shade before each physical repair pass.
             self._select_and_verify_shade(operation.palette_index)
-            self.callbacks.status(
-                "Réparation par traits continus de la frontière et de la zone "
-                f"({attempt}/3)"
-            )
-            for stroke in operation.repair_strokes:
+            if missing_cells:
+                count = len(missing_cells)
+                detail = "1 case à reprendre" if count == 1 else f"{count} cases à reprendre"
+                strokes = build_continuous_strokes(missing_cells, operation.palette_index)
+            else:
+                detail = "zone entière"
+                strokes = operation.repair_strokes
+            self.callbacks.status(f"Retouche au crayon ({attempt}/3) — {detail}")
+            for stroke in strokes:
                 self._trace_stroke(stroke)
                 self._sleep(self.timing.between_strokes_seconds)
-            # No stroke above updates _painted. If F12 interrupts any of them,
-            # the complete repair operation is replayed idempotently on resume.
             self._checkpoint()
-            result = self._verify_fill_operation(operation, FillVerificationPhase.AFTER)
+            result, observed_missing = self._verify_fill_operation(
+                operation, FillVerificationPhase.AFTER
+            )
             self._checkpoint()
             if result is FillCheckState.SUCCESS:
                 self._commit_pixels(operation.filled_pixel_count)
@@ -431,24 +395,15 @@ class HybridAutomationRunner(AutomationRunner):
             if result is FillCheckState.OVERFLOW:
                 self.manual_recovery_required = True
                 raise RuntimeError(
-                    "Une cellule sentinelle porte la couleur du remplissage après la "
-                    "réparation au crayon. Inspectez la toile avant toute reprise."
+                    "Une cellule extérieure a pris la couleur cible pendant la "
+                    "retouche au crayon. Inspectez la toile avant de reprendre."
                 )
-            if attempt < 3:
-                self.callbacks.status(
-                    "Réparation au crayon non confirmée — nouvelle passe complète "
-                    f"({attempt + 1}/3)"
-                )
-        if self.force_verification_failures:
-            self.callbacks.status(
-                "Mode Sans échec — zone entièrement repassée au crayon et validée de force"
-            )
-            self._commit_pixels(operation.filled_pixel_count)
-            return
-        raise RuntimeError(
-            "La zone réparée au crayon n'a pas pu être confirmée après trois passes. "
-            "Automatisation arrêtée avant de poursuivre."
+            if observed_missing is not None:
+                missing_cells = observed_missing
+        self.callbacks.status(
+            "Zone non confirmée après trois retouches au crayon — poursuite du dessin"
         )
+        self._commit_pixels(operation.filled_pixel_count)
 
     def _trace_stroke(self, stroke: Stroke) -> None:
         self._drag_stroke(stroke)

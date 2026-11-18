@@ -221,7 +221,9 @@ def build_continuous_strokes(
     )
 
 
-def build_painting_plan(indices: np.ndarray) -> PaintingPlan:
+def build_painting_plan(
+    indices: np.ndarray, *, point_by_point: bool = False
+) -> PaintingPlan:
     if indices.ndim != 2:
         raise ValueError("La matrice de pixels doit avoir deux dimensions")
     if not np.issubdtype(indices.dtype, np.integer):
@@ -254,11 +256,11 @@ def build_painting_plan(indices: np.ndarray) -> PaintingPlan:
                 Cell(int(column), int(row))
                 for row, column in zip(rows, columns, strict=True)
             )
-            shade_passes.append(
-                ShadePass(
-                    palette_index,
-                    build_continuous_strokes(cells, palette_index),
-                )
+            strokes = (
+                tuple(Stroke(palette_index, cell, cell) for cell in cells)
+                if point_by_point
+                else build_continuous_strokes(cells, palette_index)
             )
+            shade_passes.append(ShadePass(palette_index, strokes))
         family_passes.append(FamilyPass(group, tuple(shade_passes)))
     return PaintingPlan(width, height, tuple(family_passes))

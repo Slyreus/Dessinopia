@@ -2,7 +2,7 @@
 
 Convertit une image et la reproduit automatiquement dans l’atelier de peinture de **Heartopia**.
 
-> Version 1.0.1 pour Windows 11. Ouvrez Heartopia en mode fenêtré sans bordure.
+> Version 1.0.2 pour Windows 11. Ouvrez Heartopia en mode fenêtré sans bordure.
 
 ## Télécharger
 
@@ -27,7 +27,7 @@ puis lancez `Dessinopia.exe`.
 - pause/reprise par le bouton ou la touche F8, arrêt F12 et diagnostic détaillé ;
 - choix explicite entre reprendre le checkpoint ou réinitialiser à 0 % ;
 - mode « Sans échec » déverrouillé après une erreur pour forcer une reprise contrôlée ;
-- audit et réparation automatique des cellules manquantes.
+- audit des cases vides et des écarts de couleur, avec retouches case par case et contrôle après chaque passe.
 
 ## Utilisation
 
@@ -36,6 +36,7 @@ puis lancez `Dessinopia.exe`.
 3. Cliquez sur **Détecter / afficher l’overlay**. La grille suit la surface peignable et se recale lorsque la fenêtre change de taille ou d’écran, tant que le dessin est à l’arrêt. Après un changement de toile, cliquez sur **Redétecter la toile** dans le bandeau. **Repères** permet un ajustement manuel.
 4. Cliquez sur **Démarrer** pour tester les cinq points au premier lancement du dessin, ou sur **Démarrer sans test** pour utiliser directement les repères affichés.
 5. Confirmez le lancement et laissez la souris libre pendant le dessin. **F8** met le dessin en pause et **F12** l’arrête.
+6. Si l’audit après dessin signale des cases à retoucher, cliquez sur **Réparer les trous**. Dessinopia compare la toile à l’image convertie et relit la toile après chaque passe, jusqu’à trois passes.
 
 ### Choisir le tempo
 

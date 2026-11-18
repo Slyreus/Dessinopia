@@ -365,12 +365,7 @@ class AutomationRunner:
             self.plan.height,
         )
         self._mouse.move_to(first, self._varied(self.timing.cursor_move_seconds))
-        if len(trace) == 1:
-            self._motion_checkpoint()
-            self._mouse.click()
-            self._motion_sleep(self.timing.stroke_cell_seconds)
-            return
-
+        self._motion_checkpoint()
         self._mouse.left_down()
         try:
             self._motion_sleep(self.timing.stroke_cell_seconds)
@@ -386,7 +381,8 @@ class AutomationRunner:
                     point,
                     self._varied(self.timing.stroke_cell_seconds),
                 )
-            self._motion_sleep(self.timing.stroke_cell_seconds)
+            if len(trace) > 1:
+                self._motion_sleep(self.timing.stroke_cell_seconds)
         finally:
             self._mouse.left_up()
 
@@ -439,6 +435,15 @@ class AutomationRunner:
                 return
             raise RuntimeError(f"Calibration des outils refusée : {error}")
 
+    def _move_cursor_off_canvas(self) -> None:
+        # The cursor and hover effects can cover cells or tint the shade swatches.
+        self._checkpoint()
+        assert self._mouse is not None
+        self._mouse.move_to(
+            self.calibration.pencil_tool,
+            self._varied(self.timing.cursor_move_seconds),
+        )
+
     def _select_and_verify_pencil(self) -> None:
         for attempt in range(1, self._tool_selection_attempts + 1):
             self._click_at(
@@ -482,6 +487,7 @@ class AutomationRunner:
             self._click_at(shade_point)
             if self.verify_shade is None:
                 return
+            self._move_cursor_off_canvas()
             result = self.verify_shade(palette_index)
             if isinstance(result, ShadeSelectionObservation):
                 last_summary = result.summary

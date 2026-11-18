@@ -207,6 +207,11 @@ class CalibrationCleanupRunner:
             self._click_at(point)
             if self.verify_shade is None:
                 return
+            assert self._mouse is not None
+            self._mouse.move_to(
+                self.calibration.pencil_tool,
+                self._varied(self.timing.cursor_move_seconds),
+            )
             result = self.verify_shade(column, row)
             if isinstance(result, ShadeSelectionObservation):
                 last_summary = result.summary

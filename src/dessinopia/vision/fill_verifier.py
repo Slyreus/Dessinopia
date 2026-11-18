@@ -16,6 +16,7 @@ _LOCAL_THRESHOLD_FLOOR = 2.0
 _LOCAL_THRESHOLD_CEILING = 8.0
 _SOURCE_SEPARATION_RATIO = 0.45
 _EXPECTED_SHADE_MARGIN = 0.75
+_GUARD_STABILITY_THRESHOLD = 0.75
 
 # Heartopia draws an ivory, diagonally striped background. These references are
 # sampled from the supplied empty canvases. They are used only to reject an
@@ -55,6 +56,7 @@ class FillCheck:
     expected_total: int
     guard_matches: int
     guard_total: int
+    missing_cells: tuple[Cell, ...] | None = None
 
     @property
     def summary(self) -> str:
@@ -62,7 +64,7 @@ class FillCheck:
             f"{self.state.value}, confiance {self.confidence:.0%}; "
             f"frontière {self.fence_matches}/{self.fence_total}, "
             f"zone {self.expected_matches}/{self.expected_total}, "
-            f"sentinelles touchées {self.guard_matches}/{self.guard_total}"
+            f"sentinelles détectées {self.guard_matches}/{self.guard_total}"
         )
 
 
@@ -74,9 +76,10 @@ class _Samples:
 
 @dataclass(frozen=True, slots=True)
 class _FillContext:
-    operation_key: tuple[int, int, int, int, int]
-    target_lab: np.ndarray
+    operation: FillOperation
+    target_lab: np.ndarray | None
     match_threshold: float
+    guard_lab: np.ndarray
 
 
 class FillCanvasVerifier:
@@ -161,22 +164,16 @@ class FillCanvasVerifier:
         fence_closed = target_valid and fence_matches == fence_total
         guards_clear = guard_matches == 0
 
-        self._context = None
-        if target_valid and guards_clear:
-            # Preserve the empirical fence colour even when this operation must
-            # fall back to the pencil (partial replay or a missing fence cell).
-            # The runner can then verify its full repair, including pale shades
-            # that cannot be certified safely from a cold post-check.
-            self._context = _FillContext(
-                self._operation_key(operation),
-                target_lab,
-                threshold,
-            )
-        if guard_matches:
-            state = FillCheckState.OVERFLOW
-        elif (
+        # Keep the colour of each guard for the post-check, including any
+        # that already resembles the target before this operation.
+        self._context = _FillContext(
+            operation,
+            target_lab if target_valid else None,
+            threshold,
+            guards.lab,
+        )
+        if (
             fence_closed
-            and guards_clear
             and expected_matches == expected_total
             and not pale_replay_is_ambiguous
         ):
@@ -208,6 +205,13 @@ class FillCanvasVerifier:
             expected_total,
             guard_matches,
             guard_total,
+            missing_cells=(
+                self._missing_cells(operation, fence_mask, expected_mask)
+                if state is FillCheckState.FALLBACK
+                and target_valid
+                and not pale_replay_is_ambiguous
+                else None
+            ),
         )
 
     def check_after(
@@ -227,11 +231,9 @@ class FillCanvasVerifier:
         )
         del image
         context = self._context
-        context_matches = (
-            context is not None and context.operation_key == self._operation_key(operation)
-        )
-        if context_matches:
-            assert context is not None
+        if context is not None and context.operation != operation:
+            context = None
+        if context is not None and context.target_lab is not None:
             target_lab = context.target_lab
             threshold = context.match_threshold
             target_valid = True
@@ -254,6 +256,10 @@ class FillCanvasVerifier:
         fence_mask = self._matches(fence.lab, target_lab, threshold)
         expected_mask = self._matches(expected.lab, target_lab, threshold)
         guard_mask = self._matches(guards.lab, target_lab, threshold)
+        if context is not None:
+            already_matched = self._matches(context.guard_lab, target_lab, threshold)
+            unchanged = self._matches(guards.lab, context.guard_lab, _GUARD_STABILITY_THRESHOLD)
+            guard_mask &= ~(already_matched & unchanged)
         if not target_valid:
             fence_mask[:] = False
             expected_mask[:] = False
@@ -265,21 +271,14 @@ class FillCanvasVerifier:
         expected_total = len(operation.expected_cells)
         guard_total = len(operation.guard_cells)
 
-        # BEFORE only stores a context when every guard is clear under this
-        # exact empirical target model. Any matching guard afterwards is thus a
-        # conservative leak signal; no secondary delta may mask the transition.
-        overflow = guard_matches > 0
-
-        if overflow:
+        if guard_matches and context is not None and target_valid:
             state = FillCheckState.OVERFLOW
-        elif not target_valid:
+        elif guard_matches or not target_valid:
             state = FillCheckState.UNKNOWN
         elif expected_matches == expected_total and fence_matches == fence_total:
             state = FillCheckState.SUCCESS
-        elif fence_matches == fence_total:
-            state = FillCheckState.INCOMPLETE
         else:
-            state = FillCheckState.UNKNOWN
+            state = FillCheckState.INCOMPLETE
 
         confidence = self._confidence(
             fence_matches,
@@ -298,6 +297,27 @@ class FillCanvasVerifier:
             expected_total,
             guard_matches,
             guard_total,
+            missing_cells=(
+                self._missing_cells(operation, fence_mask, expected_mask)
+                if state is FillCheckState.INCOMPLETE
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _missing_cells(
+        operation: FillOperation,
+        fence_mask: np.ndarray,
+        expected_mask: np.ndarray,
+    ) -> tuple[Cell, ...]:
+        return tuple(
+            cell
+            for cells, matches in (
+                (operation.required_fence, fence_mask),
+                (operation.expected_cells, expected_mask),
+            )
+            for cell, matched in zip(cells, matches, strict=True)
+            if not matched
         )
 
     def _sample_operation(
@@ -576,16 +596,6 @@ class FillCanvasVerifier:
             return np.zeros(0, dtype=bool)
         deltas = np.asarray(delta_e_ciede2000(lab, target_lab), dtype=float)
         return deltas <= threshold
-
-    @staticmethod
-    def _operation_key(operation: FillOperation) -> tuple[int, int, int, int, int]:
-        return (
-            operation.component_id,
-            operation.palette_index,
-            operation.seed.column,
-            operation.seed.row,
-            len(operation.expected_cells),
-        )
 
     @staticmethod
     def _distance_to_canvas_background(palette_target: np.ndarray) -> float:

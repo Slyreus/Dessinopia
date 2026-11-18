@@ -5,7 +5,7 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum, StrEnum
 from pathlib import Path
 from typing import Any
@@ -95,6 +95,23 @@ def calibration_fingerprint(calibration: CalibrationProfile | None) -> str:
         separators=(",", ":"),
     ).encode("ascii")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def _compatible_calibration_fingerprints(
+    calibration: CalibrationProfile | None,
+) -> set[str]:
+    if calibration is None:
+        return {_EMPTY_CALIBRATION_FINGERPRINT}
+    # Windows can supply integer origins that are read back from settings as floats.
+    left = float(calibration.reference_left)
+    top = float(calibration.reference_top)
+    left_values = (left, int(left)) if left.is_integer() else (left,)
+    top_values = (top, int(top)) if top.is_integer() else (top,)
+    return {
+        calibration_fingerprint(replace(calibration, reference_left=x, reference_top=y))
+        for x in left_values
+        for y in top_values
+    }
 
 
 def is_atomic_progress(plan: PaintPlan, validated_pixels: int) -> bool:
@@ -240,7 +257,7 @@ class ResumeJournalEntry:
             and (
                 calibration is None
                 or self.calibration_fingerprint
-                == calibration_fingerprint(calibration)
+                in _compatible_calibration_fingerprints(calibration)
             )
         )
 
@@ -362,6 +379,7 @@ class PlanResumeJournal:
         self.mode = mode
         self.plan_fingerprint = plan_fingerprint(plan)
         self.calibration_fingerprint = calibration_fingerprint(calibration)
+        self._calibration_fingerprints = _compatible_calibration_fingerprints(calibration)
         self.total_pixels = plan.pixel_count
         self._boundaries = frozenset(_atomic_progress_boundaries(plan))
 
@@ -373,7 +391,7 @@ class PlanResumeJournal:
             return None
         if (
             entry.plan_fingerprint != self.plan_fingerprint
-            or entry.calibration_fingerprint != self.calibration_fingerprint
+            or entry.calibration_fingerprint not in self._calibration_fingerprints
             or entry.total_pixels != self.total_pixels
             or entry.validated_pixels not in self._boundaries
         ):

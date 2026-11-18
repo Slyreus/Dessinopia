@@ -92,8 +92,8 @@ from dessinopia.vision.detector import (
     canvas_matches_calibration,
     canvas_matches_grid_aspect,
 )
-from dessinopia.vision.fill_verifier import FillCanvasVerifier, FillCheckState
-from dessinopia.vision.hole_detector import audit_canvas_holes, repair_indices
+from dessinopia.vision.fill_verifier import FillCanvasVerifier, FillCheck, FillCheckState
+from dessinopia.vision.hole_detector import HoleAudit, audit_canvas_holes, repair_indices
 from dessinopia.vision.palette_observer import PaletteObservation, PaletteObserver
 from dessinopia.vision.shade_observer import (
     ShadeSelectionObservation,
@@ -102,6 +102,7 @@ from dessinopia.vision.shade_observer import (
 from dessinopia.vision.tool_observer import DrawingTool, ToolObservation, ToolObserver
 
 AutomationWorker = AutomationRunner | CalibrationCleanupRunner | PaletteRecoveryRunner
+_MAX_HOLE_REPAIR_PASSES = 3
 
 
 TEMPO_ADVICE = {
@@ -162,6 +163,7 @@ class MainWindow(QMainWindow):
         self.runner: AutomationWorker | None = None
         self.runner_thread: AutomationThread | None = None
         self._run_mode = "idle"
+        self._hole_repair_pass = 0
         self._resume_pixels = 0
         self._resume_fill_mode: bool | None = None
         self._manual_recovery_required = False
@@ -1260,7 +1262,7 @@ class MainWindow(QMainWindow):
         self._launch_worker(runner, "draw")
 
     def start_hole_repair(self) -> None:
-        """Audit the visible board and repaint background-like target cells."""
+        """Audit the visible board and repaint cells that differ from the image."""
 
         if not self.result or not self.settings.calibration:
             self.overlay_toolbar.status_label.setText(
@@ -1268,6 +1270,11 @@ class MainWindow(QMainWindow):
             )
             return
         if self.runner_thread and self.runner_thread.isRunning():
+            return
+        if not self._conversion_is_current():
+            self.overlay_toolbar.status_label.setText(
+                "Reconvertissez l’image avant de réparer la toile"
+            )
             return
         self._start_diagnostic_session("réparation-trous")
         self._prepare_hole_repair()
@@ -1283,39 +1290,55 @@ class MainWindow(QMainWindow):
             return
         if not self._ensure_main_palette("hole_repair"):
             return
-        image, profile = self._capture_for_detection()
-        if image is None or profile is None:
-            self._automation_failed("La toile n'a pas pu être capturée pour l'audit des trous.")
+        audit = self._audit_current_canvas()
+        if audit is None:
+            self.overlay_toolbar.status_label.setText("Audit de la toile indisponible")
             return
-        audit = audit_canvas_holes(image, profile, self.result.indices)
+        if not audit.repair_count:
+            self.overlay_toolbar.status_label.setText("Audit terminé · aucune retouche détectée")
+            return
+        if not self._confirm_hole_repair(audit):
+            return
+        self._hole_repair_pass = 0
+        self._launch_hole_repair(audit)
+
+    def _audit_current_canvas(self) -> HoleAudit | None:
+        if self.result is None:
+            return None
+        try:
+            image, profile = self._capture_for_detection()
+            if image is None or profile is None:
+                raise ValueError("Capture de la toile indisponible")
+            audit = audit_canvas_holes(image, profile, self.result.indices)
+        except Exception as exc:
+            self._append_diagnostic(f"Audit de la toile impossible — {exc}")
+            return None
         self._append_diagnostic(
-            f"Audit des trous — candidats={audit.hole_count}/{audit.sampled_cells}"
+            f"Audit de la toile — {audit.hole_count} cases vides, "
+            f"{len(audit.wrong_color_cells)} écarts de couleur sur {audit.sampled_cells} cases"
         )
-        if not audit.cells:
-            self.overlay_toolbar.status_label.setText("Audit terminé — aucun trou détecté")
-            QMessageBox.information(
-                self.overlay_toolbar,
-                "Audit terminé",
-                "Aucune cellule ressemblant au fond ivoire n'a été détectée.",
-            )
-            return
-        response = QMessageBox.question(
+        return audit
+
+    def _confirm_hole_repair(self, audit: HoleAudit) -> bool:
+        return QMessageBox.question(
             self.overlay_toolbar,
-            "Réparer les trous",
-            f"Dessinopia a trouvé {audit.hole_count} cellules ressemblant encore au "
-            "fond ivoire. Les nuances très pâles peuvent être repeintes elles aussi, "
-            "ce qui est sans danger.\n\nLa réparation utilisera un clic prudent par "
-            "cellule. Continuer ?",
-        )
-        if response is not QMessageBox.StandardButton.Yes:
-            return
+            "Réparer la toile",
+            f"Cases vides détectées · {audit.hole_count}\n"
+            f"Écarts de couleur détectés · {len(audit.wrong_color_cells)}\n\n"
+            "Dessinopia retouchera ces cases une par une, puis contrôlera le résultat. "
+            "Continuer ?",
+        ) is QMessageBox.StandardButton.Yes
+
+    def _launch_hole_repair(self, audit: HoleAudit) -> None:
+        assert self.result is not None and self.settings.calibration is not None
+        self._hole_repair_pass += 1
         sparse = repair_indices(self.result.indices, audit)
-        repair_plan = build_painting_plan(sparse)
+        repair_plan = build_painting_plan(sparse, point_by_point=True)
         calibration = self.settings.calibration
         runner = AutomationRunner(
             repair_plan,
             calibration,
-            TIMING_PRESETS["prudent"],
+            replace(TIMING_PRESETS["prudent"], stroke_cell_seconds=0.060),
             verify_group=lambda group: self._observe_palette(group, calibration) or False,
             verify_tool=lambda tool: self._verify_tool(tool, calibration),
             verify_shade=lambda palette_index: self._verify_shade(
@@ -1324,10 +1347,24 @@ class MainWindow(QMainWindow):
             ),
         )
         self._append_diagnostic(
-            f"Réparation des trous — cellules={repair_plan.pixel_count}; "
-            "mode=prudent-point-par-point"
+            f"Retouches au crayon ({self._hole_repair_pass}/{_MAX_HOLE_REPAIR_PASSES}) "
+            f"— {repair_plan.pixel_count} cases"
         )
         self._launch_worker(runner, "hole_repair")
+
+    def _finish_hole_repair(self) -> None:
+        audit = self._audit_current_canvas()
+        if audit is None:
+            message = "Retouches effectuées · contrôle de la toile indisponible"
+        elif not audit.repair_count:
+            message = "Réparation terminée · aucune retouche détectée au contrôle"
+        elif self._hole_repair_pass < _MAX_HOLE_REPAIR_PASSES:
+            self._launch_hole_repair(audit)
+            return
+        else:
+            message = f"Réparation terminée · {audit.repair_count} cases à vérifier"
+        self._append_diagnostic(message)
+        self.overlay_toolbar.status_label.setText(message)
 
     def _ensure_main_palette(self, continuation: str) -> bool:
         observation = self._observe_palette()
@@ -1674,13 +1711,18 @@ class MainWindow(QMainWindow):
                 self._resume_journal.clear()
             self._resume_journal = None
             self._append_diagnostic("Dessin terminé sans erreur")
+            audit = self._audit_current_canvas()
+            if audit is not None and audit.repair_count:
+                detail = (
+                    "1 case à retoucher"
+                    if audit.repair_count == 1
+                    else f"{audit.repair_count} cases à retoucher"
+                )
+                self.overlay_toolbar.status_label.setText(f"Dessin terminé · {detail}")
             return
         if mode == "hole_repair":
             self._run_mode = "idle"
-            self._append_diagnostic("Réparation des trous terminée sans erreur")
-            self.overlay_toolbar.status_label.setText(
-                "Réparation terminée — vous pouvez relancer un audit de contrôle"
-            )
+            self._finish_hole_repair()
 
     def _automation_is_active(self) -> bool:
         """Return True while a worker owns the immutable drawing session."""
@@ -1880,8 +1922,8 @@ class MainWindow(QMainWindow):
                 "zone non confirmée",
                 "1. Laissez Heartopia au premier plan quelques secondes et affichez la "
                 "palette principale.\n2. Vérifiez que le cadre Toile et sa grille sont "
-                "alignés dans « Repères détectés ».\n3. Cliquez sur Reprendre ; la "
-                "zone entière sera rejouée au crayon puis recontrôlée avant de continuer.",
+                "alignés dans « Repères détectés ».\n3. Cliquez sur Reprendre pour "
+                "contrôler de nouveau la zone et retoucher les cases manquantes.",
             )
         if "nuance" in normalized:
             return (
@@ -2099,7 +2141,7 @@ class MainWindow(QMainWindow):
         *,
         plan: HybridPaintingPlan | None = None,
         calibration: CalibrationProfile | None = None,
-    ) -> FillCheckState:
+    ) -> FillCheck | FillCheckState:
         active_plan = plan or self.hybrid_plan
         if active_plan is None:
             return FillCheckState.UNKNOWN
@@ -2146,9 +2188,12 @@ class MainWindow(QMainWindow):
         overflow_count = sum(
             check.state is FillCheckState.OVERFLOW for check in checks
         )
+        if overflow_count >= 2:
+            return FillCheckState.OVERFLOW
+        for check in checks:
+            if check.missing_cells and checks.count(check) >= 2:
+                return check
         if phase is FillVerificationPhase.BEFORE:
-            if overflow_count >= 2:
-                return FillCheckState.OVERFLOW
             if all(check.state is FillCheckState.ALREADY_FILLED for check in checks):
                 return FillCheckState.ALREADY_FILLED
             if all(check.state is FillCheckState.READY for check in checks):
@@ -2157,12 +2202,9 @@ class MainWindow(QMainWindow):
         success_count = sum(
             check.state is FillCheckState.SUCCESS for check in checks
         )
-        if overflow_count >= 2:
-            return FillCheckState.OVERFLOW
         if success_count >= 2:
             return FillCheckState.SUCCESS
-        # Any non-majority uncertainty is recoverable: the runner switches back
-        # to the pencil, redraws the complete fence/zone and checks it again.
+        # The pencil runner can fix an incomplete region even without a stable cell list.
         return FillCheckState.INCOMPLETE
 
     def _validate_canvas_before_start(self) -> tuple[bool, str, bool]:
