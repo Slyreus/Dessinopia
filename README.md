@@ -2,7 +2,7 @@
 
 Convertit une image et la reproduit automatiquement dans l’atelier de peinture de **Heartopia**.
 
-> Version 1.0.2 pour Windows 11. Ouvrez Heartopia en mode fenêtré sans bordure.
+> Version 1.0.3 pour Windows 11. Ouvrez Heartopia en mode fenêtré sans bordure.
 
 ## Télécharger
 
@@ -27,7 +27,7 @@ puis lancez `Dessinopia.exe`.
 - pause/reprise par le bouton ou la touche F8, arrêt F12 et diagnostic détaillé ;
 - choix explicite entre reprendre le checkpoint ou réinitialiser à 0 % ;
 - mode « Sans échec » déverrouillé après une erreur pour forcer une reprise contrôlée ;
-- audit des cases vides et des écarts de couleur, avec retouches case par case et contrôle après chaque passe.
+- audit automatique après le tracé, avec retouche des cases vides et des écarts de couleur, puis contrôle après chaque passe.
 
 ## Utilisation
 
@@ -35,8 +35,8 @@ puis lancez `Dessinopia.exe`.
 2. Importez une image et choisissez son format. Pour des contours francs, gardez **Pixels nets** et le tramage **Aucun**. Le mode **Taille réelle (1:1)** place chaque pixel source dans une seule case, avec un recadrage centré si l’image dépasse la toile. **Couleurs max.** limite la palette à 16 nuances par défaut. Après un changement, cliquez sur **Convertir l'image** pour actualiser l’aperçu.
 3. Cliquez sur **Détecter / afficher l’overlay**. La grille suit la surface peignable et se recale lorsque la fenêtre change de taille ou d’écran, tant que le dessin est à l’arrêt. Après un changement de toile, cliquez sur **Redétecter la toile** dans le bandeau. **Repères** permet un ajustement manuel.
 4. Cliquez sur **Démarrer** pour tester les cinq points au premier lancement du dessin, ou sur **Démarrer sans test** pour utiliser directement les repères affichés.
-5. Confirmez le lancement et laissez la souris libre pendant le dessin. **F8** met le dessin en pause et **F12** l’arrête.
-6. Si l’audit après dessin signale des cases à retoucher, cliquez sur **Réparer les trous**. Dessinopia compare la toile à l’image convertie et relit la toile après chaque passe, jusqu’à trois passes.
+5. Confirmez le lancement et laissez la souris libre jusqu’à la fin du contrôle. Dessinopia compare la toile à l’image convertie, retouche les écarts et vérifie le résultat. Il effectue jusqu’à trois passes et affiche les cases encore à vérifier.
+6. **F8** met l’exécution en pause et **F12** l’arrête. Après une interruption des retouches, **Reprendre les retouches** relit la toile et reprend la correction.
 
 ### Choisir le tempo
 

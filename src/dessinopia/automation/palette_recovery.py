@@ -158,7 +158,7 @@ class PaletteRecoveryRunner:
     def _is_main(observation: PaletteObservation | bool) -> bool:
         if isinstance(observation, bool):
             return observation
-        return observation.state is PaletteState.MAIN
+        return observation.state is PaletteState.MAIN and observation.matches_expected
 
     def _click_at(self, point: Point, *, palette_delay: bool = False) -> None:
         assert self._mouse is not None

@@ -164,6 +164,7 @@ class MainWindow(QMainWindow):
         self.runner_thread: AutomationThread | None = None
         self._run_mode = "idle"
         self._hole_repair_pass = 0
+        self._stop_requested = False
         self._resume_pixels = 0
         self._resume_fill_mode: bool | None = None
         self._manual_recovery_required = False
@@ -1057,7 +1058,12 @@ class MainWindow(QMainWindow):
                 recovery=RecoveryState.PALETTE_RECHECK_REQUIRED,
                 force=True,
             )
+        self._stop_requested = False
         self._start_diagnostic_session("dessin")
+        if self._retouches_pending():
+            self._hole_repair_pass = 0
+            self._prepare_hole_repair(confirmation_already_given=True)
+            return
         if (
             not skip_calibration_test
             and self._resume_pixels == 0
@@ -1084,6 +1090,7 @@ class MainWindow(QMainWindow):
                 "Utilisez Reprendre, ou reconvertissez l'image pour repartir de zéro.",
             )
             return
+        self._stop_requested = False
         self._start_diagnostic_session("test-calibration")
         self._prepare_calibration_test()
 
@@ -1192,7 +1199,8 @@ class MainWindow(QMainWindow):
                 "Heartopia doit afficher la palette principale, le même format et la même "
                 "définition que Dessinopia."
                 f"{checkpoint}\n\n" + self._tempo_warning()
-                + "Ne touchez plus à la souris pendant le dessin. "
+                + "Les cases à retoucher seront corrigées automatiquement après le tracé. "
+                + "Laissez la souris libre jusqu’à la fin du contrôle. "
                 + (
                     "Le pot sera utilisé uniquement après contrôle de chaque frontière ; "
                     "un doute provoquera un repli au crayon. "
@@ -1276,31 +1284,79 @@ class MainWindow(QMainWindow):
                 "Reconvertissez l’image avant de réparer la toile"
             )
             return
+        self._stop_requested = False
+        self._hole_repair_pass = 0
         self._start_diagnostic_session("réparation-trous")
         self._prepare_hole_repair()
 
-    def _prepare_hole_repair(self) -> None:
+    def _prepare_hole_repair(
+        self,
+        *,
+        confirmation_already_given: bool = False,
+        palette_already_verified: bool = False,
+    ) -> None:
         if self.result is None or self.settings.calibration is None:
             return
-        canvas_is_current, canvas_message, override_allowed = self._validate_canvas_before_start()
-        if not canvas_is_current and not self._confirm_canvas_override(
-            canvas_message,
-            allow_continue=override_allowed,
-        ):
-            return
-        if not self._ensure_main_palette("hole_repair"):
-            return
+        self.overlay_toolbar.state_label.setText("Contrôle")
+        canvas_is_current, canvas_message, override_allowed = self._validate_canvas_before_start(
+            require_canvas=confirmation_already_given
+        )
+        if not canvas_is_current:
+            if confirmation_already_given:
+                self._report_audit_result(f"Contrôle de la toile suspendu · {canvas_message}")
+                return
+            if not self._confirm_canvas_override(canvas_message, allow_continue=override_allowed):
+                self.overlay_toolbar.state_label.setText("Prêt")
+                return
         audit = self._audit_current_canvas()
         if audit is None:
-            self.overlay_toolbar.status_label.setText("Audit de la toile indisponible")
-            return
-        if not audit.repair_count:
-            self.overlay_toolbar.status_label.setText("Audit terminé · aucune retouche détectée")
-            return
-        if not self._confirm_hole_repair(audit):
-            return
-        self._hole_repair_pass = 0
-        self._launch_hole_repair(audit)
+            self._report_audit_result("Audit de la toile indisponible")
+        elif not audit.repair_count:
+            if self._retouches_pending():
+                self._finalize_drawing()
+            else:
+                self._report_audit_result("Contrôle terminé · aucune retouche détectée", clean=True)
+        elif self._hole_repair_pass >= _MAX_HOLE_REPAIR_PASSES:
+            detail = (
+                "1 case à vérifier"
+                if audit.repair_count == 1
+                else f"{audit.repair_count} cases à vérifier"
+            )
+            self._report_audit_result(f"Contrôle après trois passes · {detail}")
+        else:
+            continuation = "hole_repair_confirmed" if confirmation_already_given else "hole_repair"
+            if not palette_already_verified and not self._ensure_main_palette(
+                continuation, allow_force=not confirmation_already_given
+            ):
+                return
+            if confirmation_already_given or self._confirm_hole_repair(audit):
+                self._launch_hole_repair(audit)
+            else:
+                self.overlay_toolbar.state_label.setText("Prêt")
+
+    def _retouches_pending(self) -> bool:
+        return self.plan is not None and 0 < self._resume_pixels == self.plan.pixel_count
+
+    def _finalize_drawing(self) -> None:
+        if self._resume_journal is not None:
+            try:
+                self._resume_journal.clear()
+            except OSError as exc:
+                self._append_diagnostic(f"Journal de reprise non supprimé — {exc}")
+        self._resume_journal = None
+        self._resume_pixels = 0
+        self._resume_fill_mode = None
+        self._manual_recovery_required = False
+        self._update_resume_ui()
+        if self.plan is not None:
+            self.overlay_toolbar.set_progress(self.plan.pixel_count, self.plan.pixel_count)
+        self._report_audit_result("Dessin terminé · toile contrôlée", clean=True)
+
+    def _report_audit_result(self, message: str, *, clean: bool = False) -> None:
+        state = AutomationState.COMPLETED.value if clean else "À vérifier"
+        self.overlay_toolbar.state_label.setText(state)
+        self.overlay_toolbar.status_label.setText(message)
+        self._append_diagnostic(message)
 
     def _audit_current_canvas(self) -> HoleAudit | None:
         if self.result is None:
@@ -1352,26 +1408,12 @@ class MainWindow(QMainWindow):
         )
         self._launch_worker(runner, "hole_repair")
 
-    def _finish_hole_repair(self) -> None:
-        audit = self._audit_current_canvas()
-        if audit is None:
-            message = "Retouches effectuées · contrôle de la toile indisponible"
-        elif not audit.repair_count:
-            message = "Réparation terminée · aucune retouche détectée au contrôle"
-        elif self._hole_repair_pass < _MAX_HOLE_REPAIR_PASSES:
-            self._launch_hole_repair(audit)
-            return
-        else:
-            message = f"Réparation terminée · {audit.repair_count} cases à vérifier"
-        self._append_diagnostic(message)
-        self.overlay_toolbar.status_label.setText(message)
-
-    def _ensure_main_palette(self, continuation: str) -> bool:
+    def _ensure_main_palette(self, continuation: str, *, allow_force: bool = True) -> bool:
         observation = self._observe_palette()
         if observation is not None and observation.matches_expected:
             self.overlay_toolbar.status_label.setText("Palette principale confirmée")
             return True
-        force_mode = self._force_mode_active()
+        force_mode = allow_force and self._force_mode_active()
         if force_mode and (
             observation is None or observation.state is PaletteState.UNKNOWN
         ):
@@ -1618,14 +1660,19 @@ class MainWindow(QMainWindow):
         )
 
     def stop_automation(self) -> None:
+        self._stop_requested = True
         if self.runner:
             self.runner.stop()
 
     def _automation_state_changed(self, value: str) -> None:
-        self.overlay_toolbar.state_label.setText(value)
         state = AutomationState(value)
+        if state is AutomationState.COMPLETED and self._run_mode in ("draw", "hole_repair"):
+            value = "Contrôle"
+        elif state is AutomationState.RUNNING and self._run_mode == "hole_repair":
+            value = "Retouches en cours"
+        self.overlay_toolbar.state_label.setText(value)
         if self._run_mode == "draw" and isinstance(self.runner, AutomationRunner):
-            if state in (AutomationState.STOPPED, AutomationState.ERROR):
+            if state in (AutomationState.STOPPED, AutomationState.ERROR, AutomationState.COMPLETED):
                 self._resume_pixels = max(self._resume_pixels, self.runner.painted_pixels)
                 self._resume_fill_mode = isinstance(
                     self.runner,
@@ -1645,10 +1692,6 @@ class MainWindow(QMainWindow):
                     recovery=recovery,
                     force=True,
                 )
-            elif state is AutomationState.COMPLETED:
-                self._resume_pixels = 0
-                self._resume_fill_mode = None
-                self._manual_recovery_required = False
         running = state in (AutomationState.RUNNING, AutomationState.PAUSED)
         self.overlay_toolbar.set_running(
             running,
@@ -1677,7 +1720,7 @@ class MainWindow(QMainWindow):
         state = self.runner.state if self.runner is not None else AutomationState.ERROR
         self.runner_thread = None
         self._set_project_controls_locked(False)
-        if state is not AutomationState.COMPLETED:
+        if self._stop_requested or state is not AutomationState.COMPLETED:
             self._run_mode = "idle"
             return
         if mode == "palette_recovery":
@@ -1690,8 +1733,11 @@ class MainWindow(QMainWindow):
                 self._prepare_drawing(
                     confirmation_already_given=continuation == "draw_confirmed"
                 )
-            elif continuation == "hole_repair":
-                self._prepare_hole_repair()
+            elif continuation in ("hole_repair", "hole_repair_confirmed"):
+                self._prepare_hole_repair(
+                    confirmation_already_given=continuation == "hole_repair_confirmed",
+                    palette_already_verified=True,
+                )
             return
         if mode == "calibration_test":
             self._run_mode = "idle"
@@ -1707,22 +1753,15 @@ class MainWindow(QMainWindow):
             return
         if mode == "draw":
             self._run_mode = "idle"
-            if self._resume_journal is not None:
-                self._resume_journal.clear()
-            self._resume_journal = None
-            self._append_diagnostic("Dessin terminé sans erreur")
-            audit = self._audit_current_canvas()
-            if audit is not None and audit.repair_count:
-                detail = (
-                    "1 case à retoucher"
-                    if audit.repair_count == 1
-                    else f"{audit.repair_count} cases à retoucher"
-                )
-                self.overlay_toolbar.status_label.setText(f"Dessin terminé · {detail}")
+            self._hole_repair_pass = 0
+            if self.plan is not None and not self.plan.pixel_count:
+                self._finalize_drawing()
+            else:
+                self._prepare_hole_repair(confirmation_already_given=True)
             return
         if mode == "hole_repair":
             self._run_mode = "idle"
-            self._finish_hole_repair()
+            self._prepare_hole_repair(confirmation_already_given=True)
 
     def _automation_is_active(self) -> bool:
         """Return True while a worker owns the immutable drawing session."""
@@ -1822,6 +1861,11 @@ class MainWindow(QMainWindow):
             self.overlay_toolbar.set_resume_available(True)
             return
         if self.plan and self._resume_pixels:
+            if self._retouches_pending():
+                self.overlay_toolbar.start_button.setText("Reprendre les retouches")
+                self.overlay_toolbar.status_label.setText("Tracé terminé · contrôle de la toile")
+                self.overlay_toolbar.set_resume_available(True)
+                return
             percent = round(self._resume_pixels * 100 / max(1, self.plan.pixel_count))
             self.overlay_toolbar.start_button.setText(f"Reprendre à {percent}%")
             self.overlay_toolbar.status_label.setText(
@@ -2207,7 +2251,9 @@ class MainWindow(QMainWindow):
         # The pencil runner can fix an incomplete region even without a stable cell list.
         return FillCheckState.INCOMPLETE
 
-    def _validate_canvas_before_start(self) -> tuple[bool, str, bool]:
+    def _validate_canvas_before_start(
+        self, *, require_canvas: bool = False
+    ) -> tuple[bool, str, bool]:
         try:
             image, profile = self._capture_for_detection()
             if image is None or profile is None:
@@ -2224,9 +2270,10 @@ class MainWindow(QMainWindow):
                 # canvas is no longer one connected component.  A positively
                 # recognized Heartopia palette is then stronger evidence that the
                 # calibrated editor is still open than the canvas fill itself.
-                palette = self.detector.detect_palette_state(image, profile)
-                if palette.state in (PaletteState.MAIN, PaletteState.SHADES):
-                    return True, "", True
+                if not require_canvas:
+                    palette = self.detector.detect_palette_state(image, profile)
+                    if palette.state in (PaletteState.MAIN, PaletteState.SHADES):
+                        return True, "", True
                 return (
                     False,
                     "La toile de dessin n'est pas visible à sa position calibrée.",
