@@ -2,7 +2,7 @@
 
 Convertit une image et la reproduit automatiquement dans l’atelier de peinture de **Heartopia**.
 
-> Version bêta pour Windows 11. Heartopia doit être utilisé en mode fenêtré sans bordure.
+> Version 1.0.0 pour Windows 11. Ouvrez Heartopia en mode fenêtré sans bordure.
 
 ## Télécharger
 
@@ -23,7 +23,7 @@ puis lancez `Dessinopia.exe`.
 - dessin par traits continus, regroupé par couleur et par zone connexe ;
 - contour renforcé puis remplissage central sécurisé pour les grandes zones fermées ;
 - tempo « Très lent (anti-surcharge) » pour laisser davantage de temps au jeu entre les gestes ;
-- tempos Lent, Prudent, Équilibré et Rapide pour ajuster précisément le rythme ;
+- tempos Lent, Prudent, Normal et Rapide pour ajuster le rythme du dessin
 - pause/reprise par le bouton ou la touche F8, arrêt F12 et diagnostic détaillé ;
 - choix explicite entre reprendre le checkpoint ou réinitialiser à 0 % ;
 - mode « Sans échec » déverrouillé après une erreur pour forcer une reprise contrôlée ;
@@ -34,8 +34,14 @@ puis lancez `Dessinopia.exe`.
 1. Ouvrez l’atelier de peinture dans Heartopia.
 2. Importez une image et choisissez son format. Pour des contours francs, gardez **Pixels nets** et le tramage **Aucun**. Le mode **Taille réelle (1:1)** place chaque pixel source dans une seule case, avec un recadrage centré si l’image dépasse la toile. **Couleurs max.** limite la palette à 16 nuances par défaut. Après un changement, cliquez sur **Convertir l'image** pour actualiser l’aperçu.
 3. Cliquez sur **Détecter Heartopia**, puis vérifiez les repères sur l’overlay.
-4. Lancez le test des cinq points et confirmez l’alignement.
-5. Cliquez sur **Démarrer** et ne touchez plus à la souris pendant le dessin.
+4. Cliquez sur **Démarrer** pour tester les cinq points au premier lancement du dessin, ou sur **Démarrer sans test** pour utiliser directement les repères affichés.
+5. Confirmez le lancement et laissez la souris libre pendant le dessin. **F8** met le dessin en pause et **F12** l’arrête.
+
+### Choisir le tempo
+
+**Prudent** est le réglage initial, conseillé pour les petits dessins. **Lent** espace davantage les gestes et allonge la durée du dessin. **Très lent** convient aux PC qui peinent à suivre. Une détection reste possible à tout tempo.
+
+**Normal** (anciennement « Équilibré ») et **Rapide** s’utilisent à vos risques et périls. Un avertissement signale le risque de détection pour Normal et un risque potentiellement élevé pour Rapide.
 
 La première exécution doit rester surveillée. Une mise à jour de Heartopia peut modifier son
 interface ou ses délais d’animation.

@@ -40,9 +40,9 @@ class AppSettings:
     alpha_threshold: int = 96
     show_grid: bool = True
     allow_fill: bool = False
-    tempo: str = "equilibre"
+    tempo: str = "prudent"
     calibration: CalibrationProfile | None = None
-    timing: TimingProfile = TimingProfile()
+    timing: TimingProfile = TIMING_PRESETS["prudent"]
     resize_mode: ResizeMode = ResizeMode.PIXEL
     max_colors: int = DEFAULT_MAX_COLORS
     dither_strength: int = DEFAULT_DITHER_STRENGTH
@@ -71,7 +71,9 @@ class AppSettings:
         if not isinstance(data, dict):
             raise TypeError("Les réglages doivent être un objet JSON")
         calibration = data.get("calibration")
-        tempo = str(data.get("tempo", "equilibre"))
+        tempo = str(data.get("tempo", "prudent"))
+        if tempo not in TIMING_PRESETS:
+            tempo = "prudent"
         timing_data = data.get("timing")
         resize_mode = data.get("resize_mode", ResizeMode.PIXEL.value)
         return cls(
@@ -88,11 +90,11 @@ class AppSettings:
             alpha_threshold=int(data.get("alpha_threshold", 96)),
             show_grid=bool(data.get("show_grid", True)),
             allow_fill=bool(data.get("allow_fill", False)),
-            tempo=tempo if tempo in TIMING_PRESETS else "equilibre",
+            tempo=tempo,
             calibration=CalibrationProfile.from_dict(calibration) if calibration else None,
             timing=TimingProfile(**timing_data)
             if timing_data
-            else TIMING_PRESETS.get(tempo, TimingProfile()),
+            else TIMING_PRESETS[tempo],
         )
 
 

@@ -103,6 +103,15 @@ from dessinopia.vision.tool_observer import DrawingTool, ToolObservation, ToolOb
 AutomationWorker = AutomationRunner | CalibrationCleanupRunner | PaletteRecoveryRunner
 
 
+TEMPO_ADVICE = {
+    "tres_lent": "Conseillé si votre PC ralentit ou si le jeu répond avec du retard.",
+    "lent": "Conseillé pour espacer les gestes. Le dessin est très long et une détection reste possible.",
+    "prudent": "Conseillé pour les dessins de petite taille.",
+    "equilibre": "Risque de détection. Utilisez le tempo Normal à vos risques et périls.",
+    "rapide": "Risque de détection potentiellement élevé. Utilisez le tempo Rapide à vos risques et périls.",
+}
+
+
 class AutomationThread(QThread):
     state_changed = Signal(str)
     status_changed = Signal(str)
@@ -179,6 +188,9 @@ class MainWindow(QMainWindow):
         root.setSpacing(14)
 
         header = QHBoxLayout()
+        logo = QLabel()
+        logo.setPixmap(self.windowIcon().pixmap(44, 44))
+        header.addWidget(logo)
         brand = QVBoxLayout()
         title = QLabel("Dessinopia")
         title.setObjectName("title")
@@ -332,7 +344,7 @@ class MainWindow(QMainWindow):
         self.tempo_combo.addItem("Très lent (anti-surcharge)", "tres_lent")
         self.tempo_combo.addItem("Lent", "lent")
         self.tempo_combo.addItem("Prudent", "prudent")
-        self.tempo_combo.addItem("Équilibré", "equilibre")
+        self.tempo_combo.addItem("Normal", "equilibre")
         self.tempo_combo.addItem("Rapide", "rapide")
         self.tempo_combo.setToolTip(
             "Temporisation des déplacements et des clics. Le mode Très lent réduit "
@@ -340,6 +352,9 @@ class MainWindow(QMainWindow):
         )
         self.tempo_combo.currentIndexChanged.connect(self._settings_changed)
         form.addRow("Tempo", self.tempo_combo)
+        self.tempo_advice = QLabel()
+        self.tempo_advice.setWordWrap(True)
+        form.addRow(self.tempo_advice)
         layout.addLayout(form)
 
         alpha_label = QLabel("Seuil de transparence")
@@ -425,6 +440,9 @@ class MainWindow(QMainWindow):
 
     def _connect_overlay(self) -> None:
         self.overlay_toolbar.start_requested.connect(self.start_automation)
+        self.overlay_toolbar.start_without_test_requested.connect(
+            lambda: self.start_automation(skip_calibration_test=True)
+        )
         self.overlay_toolbar.test_requested.connect(self.start_calibration_test)
         self.overlay_toolbar.pause_requested.connect(self.pause_automation)
         self.overlay_toolbar.resume_requested.connect(self.resume_automation)
@@ -942,6 +960,7 @@ class MainWindow(QMainWindow):
         self.overlay_toolbar.raise_()
         ready = self.result is not None and self.plan is not None
         self.overlay_toolbar.start_button.setEnabled(ready)
+        self.overlay_toolbar.start_without_test_button.setEnabled(ready)
         self.overlay_toolbar.test_button.setEnabled(ready)
         self.overlay_toolbar.repair_button.setEnabled(ready)
         if detected:
@@ -971,7 +990,7 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
-    def start_automation(self) -> None:
+    def start_automation(self, *, skip_calibration_test: bool = False) -> None:
         if not self.plan or not self.settings.calibration:
             self.overlay_toolbar.status_label.setText("Conversion ou calibration manquante")
             return
@@ -1004,12 +1023,15 @@ class MainWindow(QMainWindow):
             )
         self._start_diagnostic_session("dessin")
         if (
-            self._resume_pixels == 0
+            not skip_calibration_test
+            and self._resume_pixels == 0
             and not self._calibration_test_is_valid()
             and not self._force_mode_active()
         ):
             self._prepare_calibration_test()
             return
+        if skip_calibration_test:
+            self._append_diagnostic("Démarrage sans test des cinq points")
         self._prepare_drawing()
 
     def start_calibration_test(self) -> None:
@@ -1045,7 +1067,8 @@ class MainWindow(QMainWindow):
             "Tester la calibration",
             "Dessinopia va peindre temporairement cinq pixels : rouge en haut à gauche, "
             "jaune en haut à droite, vert au centre, bleu en bas à gauche et violet en bas "
-            "à droite.\n\nNe touchez plus à la souris. F12 arrête immédiatement. Continuer ?",
+            "à droite.\n\n" + self._tempo_warning()
+            + "Ne touchez plus à la souris. F12 arrête immédiatement. Continuer ?",
         )
         if response is not QMessageBox.StandardButton.Yes:
             return
@@ -1132,7 +1155,8 @@ class MainWindow(QMainWindow):
                 "Reprendre le dessin" if self._resume_pixels else "Lancer le dessin",
                 "Heartopia doit afficher la palette principale, le même format et la même "
                 "définition que Dessinopia."
-                f"{checkpoint}\n\nNe touchez plus à la souris pendant le dessin. "
+                f"{checkpoint}\n\n" + self._tempo_warning()
+                + "Ne touchez plus à la souris pendant le dessin. "
                 + (
                     "Le pot sera utilisé uniquement après contrôle de chaque frontière ; "
                     "un doute provoquera un repli au crayon. "
@@ -2309,6 +2333,15 @@ class MainWindow(QMainWindow):
     def _update_filter_controls(self) -> None:
         self.resize_combo.setEnabled(self.settings.fit_mode is not FitMode.NATIVE)
         self.dither_strength.setEnabled(self.settings.dither_mode is not DitherMode.NONE)
+        tempo = self.settings.tempo
+        self.tempo_advice.setText(TEMPO_ADVICE[tempo])
+        color = {"rapide": "#ff8282", "equilibre": "#ffc078"}.get(tempo, "#b4cbc5")
+        self.tempo_advice.setStyleSheet(f"color: {color};")
+
+    def _tempo_warning(self) -> str:
+        if self.settings.tempo in ("equilibre", "rapide"):
+            return TEMPO_ADVICE[self.settings.tempo] + "\n\n"
+        return ""
 
     def _persist_controls(self) -> None:
         self.settings.ratio = AspectRatio(self.ratio_combo.currentData())

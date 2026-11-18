@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dessinopia"
-version = "1.0.0b6"
+version = "1.0.0"
 description = "Convertisseur et assistant de peinture pour Heartopia"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -36,3 +36,6 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+dessinopia = ["assets/palette.png"]

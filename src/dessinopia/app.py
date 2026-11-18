@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, Qt
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import QApplication
 
-from dessinopia import __version__
+import dessinopia
 from dessinopia.ui.main_window import MainWindow
 from dessinopia.ui.styles import APP_STYLESHEET
 
@@ -14,11 +15,12 @@ from dessinopia.ui.styles import APP_STYLESHEET
 def main() -> int:
     QCoreApplication.setOrganizationName("Slyreus")
     QCoreApplication.setApplicationName("Dessinopia")
-    QCoreApplication.setApplicationVersion(__version__)
+    QCoreApplication.setApplicationVersion(dessinopia.__version__)
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(str(Path(dessinopia.__file__).parent / "assets" / "palette.png")))
     app.setStyle("Fusion")
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor("#111918"))

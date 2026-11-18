@@ -163,6 +163,7 @@ class GridOverlay(QWidget):
 
 class OverlayToolbar(QFrame):
     start_requested = Signal()
+    start_without_test_requested = Signal()
     test_requested = Signal()
     pause_requested = Signal()
     resume_requested = Signal()
@@ -226,6 +227,10 @@ class OverlayToolbar(QFrame):
         buttons.setSpacing(6)
         self.start_button = QPushButton("Démarrer")
         self.start_button.setObjectName("primary")
+        self.start_without_test_button = QPushButton("Démarrer sans test")
+        self.start_without_test_button.setToolTip(
+            "Utiliser les repères affichés sans peindre les cinq points de calibration."
+        )
         self.pause_button = QPushButton("Pause")
         self.resume_button = QPushButton("Reprendre")
         self.stop_button = QPushButton("Arrêter")
@@ -248,6 +253,7 @@ class OverlayToolbar(QFrame):
         )
         for button in (
             self.start_button,
+            self.start_without_test_button,
             self.pause_button,
             self.resume_button,
             self.stop_button,
@@ -260,6 +266,7 @@ class OverlayToolbar(QFrame):
             buttons.addWidget(button)
         layout.addLayout(buttons)
         self.start_button.clicked.connect(self.start_requested)
+        self.start_without_test_button.clicked.connect(self.start_without_test_requested)
         self.test_button.clicked.connect(self.test_requested)
         self.pause_button.clicked.connect(self.pause_requested)
         self.resume_button.clicked.connect(self.resume_requested)
@@ -291,6 +298,7 @@ class OverlayToolbar(QFrame):
         active = running or stopping
         self._active = active
         self.start_button.setEnabled(not active)
+        self.start_without_test_button.setEnabled(not active)
         self.pause_button.setEnabled(running and not paused and not stopping)
         self.resume_button.setEnabled(running and paused and not stopping)
         self.stop_button.setEnabled(running and not stopping)

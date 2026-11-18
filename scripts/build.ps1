@@ -34,6 +34,8 @@ try {
         --assume-yes-for-downloads `
         --enable-plugin=pyside6 `
         --windows-console-mode=disable `
+        --windows-icon-from-ico=src/dessinopia/assets/dessinopia.ico `
+        --include-data-files=src/dessinopia/assets/palette.png=dessinopia/assets/palette.png `
         --company-name=Slyreus `
         --product-name=Dessinopia `
         --file-version=$windowsVersion `
