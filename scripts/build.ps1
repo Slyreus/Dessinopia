@@ -33,6 +33,7 @@ try {
         --mingw64 `
         --assume-yes-for-downloads `
         --enable-plugin=pyside6 `
+        --include-qt-plugins=multimedia `
         --windows-console-mode=disable `
         --windows-icon-from-ico=src/dessinopia/assets/dessinopia.ico `
         --include-data-files=src/dessinopia/assets/palette.png=dessinopia/assets/palette.png `

@@ -8,6 +8,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -105,6 +106,8 @@ class GridOverlay(QWidget):
         # screen's DPR.  The calibrated canvas belongs to a single monitor, so keep the
         # transparent overlay entirely on that monitor.
         if self.target_screen:
+            if self.screen() != self.target_screen:
+                self.setScreen(self.target_screen)
             self.setGeometry(self.target_screen.geometry())
         self.update()
 
@@ -142,6 +145,7 @@ class GridOverlay(QWidget):
         width = logical_canvas.width
         height = logical_canvas.height
         canvas_rect = QRectF(left, top, width, height)
+        painter.setClipRect(canvas_rect)
         painter.fillRect(canvas_rect, QColor(41, 214, 180, 13))
         painter.setPen(QPen(QColor(83, 232, 204, 230), 3))
         painter.drawRect(canvas_rect)
@@ -170,6 +174,7 @@ class OverlayToolbar(QFrame):
     reset_requested = Signal()
     stop_requested = Signal()
     calibrate_requested = Signal()
+    redetect_requested = Signal()
     repair_requested = Signal()
     close_requested = Signal()
 
@@ -223,8 +228,8 @@ class OverlayToolbar(QFrame):
         header.addWidget(close)
         layout.addLayout(header)
 
-        buttons = QHBoxLayout()
-        buttons.setSpacing(6)
+        self.button_layout = QGridLayout()
+        self.button_layout.setSpacing(6)
         self.start_button = QPushButton("Démarrer")
         self.start_button.setObjectName("primary")
         self.start_without_test_button = QPushButton("Démarrer sans test")
@@ -243,6 +248,8 @@ class OverlayToolbar(QFrame):
         self.calibration_button.setToolTip(
             "Afficher tous les boutons détectés et les ajuster directement sur le jeu"
         )
+        self.redetect_button = QPushButton("Redétecter la toile")
+        self.redetect_button.setToolTip("Recaler la grille et les commandes visibles dans Heartopia")
         self.repair_button = QPushButton("Réparer les trous")
         self.repair_button.setToolTip(
             "Rechercher les cellules encore ivoire et les repeindre en mode prudent"
@@ -251,20 +258,22 @@ class OverlayToolbar(QFrame):
         self.reset_button.setToolTip(
             "Abandonner le checkpoint et recommencer le plan depuis zéro"
         )
-        for button in (
+        self.action_buttons = (
             self.start_button,
             self.start_without_test_button,
             self.pause_button,
             self.resume_button,
             self.stop_button,
             self.test_button,
+            self.redetect_button,
             self.calibration_button,
             self.repair_button,
             self.reset_button,
-        ):
+        )
+        for column, button in enumerate(self.action_buttons):
             button.setMinimumHeight(28)
-            buttons.addWidget(button)
-        layout.addLayout(buttons)
+            self.button_layout.addWidget(button, 0, column)
+        layout.addLayout(self.button_layout)
         self.start_button.clicked.connect(self.start_requested)
         self.start_without_test_button.clicked.connect(self.start_without_test_requested)
         self.test_button.clicked.connect(self.test_requested)
@@ -273,6 +282,7 @@ class OverlayToolbar(QFrame):
         self.reset_button.clicked.connect(self.reset_requested)
         self.stop_button.clicked.connect(self.stop_requested)
         self.calibration_button.clicked.connect(self.calibrate_requested)
+        self.redetect_button.clicked.connect(self.redetect_requested)
         self.repair_button.clicked.connect(self.repair_requested)
         self.set_running(False)
         self.adjustSize()
@@ -288,7 +298,18 @@ class OverlayToolbar(QFrame):
     def place_at_top_center(self, screen_geometry) -> None:  # type: ignore[no-untyped-def]
         """Use a wide, shallow strip that does not cover the canvas on small screens."""
 
-        target_width = max(320, min(1160, screen_geometry.width() - 24))
+        target_width = max(320, min(1220, screen_geometry.width() - 24))
+        widths = [button.sizeHint().width() for button in self.action_buttons]
+        margins = self.layout().contentsMargins()
+        available = target_width - margins.left() - margins.right()
+        for rows in range(1, len(widths) + 1):
+            columns = (len(widths) + rows - 1) // rows
+            needed = sum(max(widths[column::columns]) for column in range(columns))
+            if needed + (columns - 1) * self.button_layout.spacing() <= available:
+                break
+        for index, button in enumerate(self.action_buttons):
+            self.button_layout.removeWidget(button)
+            self.button_layout.addWidget(button, *divmod(index, columns))
         self.setFixedWidth(target_width)
         self.adjustSize()
         x = screen_geometry.left() + max(0, (screen_geometry.width() - self.width()) // 2)
@@ -304,6 +325,7 @@ class OverlayToolbar(QFrame):
         self.stop_button.setEnabled(running and not stopping)
         self.test_button.setEnabled(not active)
         self.calibration_button.setEnabled(not active)
+        self.redetect_button.setEnabled(not active)
         self.repair_button.setEnabled(not active)
         self.reset_button.setEnabled(not active and self._resume_available)
 

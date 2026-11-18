@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, ImageOps
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -86,6 +86,7 @@ from dessinopia.vision.capture import (
     monitor_containing_point,
 )
 from dessinopia.vision.detector import (
+    CanvasEvidence,
     HeartopiaDetector,
     PaletteState,
     canvas_matches_calibration,
@@ -175,6 +176,11 @@ class MainWindow(QMainWindow):
         self._force_continue_unlocked = False
         self.overlay = GridOverlay()
         self.overlay_toolbar = OverlayToolbar()
+        self._overlay_geometry = None
+        self._pending_overlay_geometry = None
+        self._overlay_geometry_timer = QTimer(self)
+        self._overlay_geometry_timer.setInterval(650)
+        self._overlay_geometry_timer.timeout.connect(self._check_overlay_geometry)
         self.calibration_editor = CalibrationOverlayEditor()
         self._return_to_overlay_after_calibration = False
         self._build_ui()
@@ -449,6 +455,7 @@ class MainWindow(QMainWindow):
         self.overlay_toolbar.reset_requested.connect(self.reset_resume)
         self.overlay_toolbar.stop_requested.connect(self.stop_automation)
         self.overlay_toolbar.calibrate_requested.connect(self.open_calibration)
+        self.overlay_toolbar.redetect_requested.connect(self._redetect_from_overlay)
         self.overlay_toolbar.repair_requested.connect(self.start_hole_repair)
         self.overlay_toolbar.close_requested.connect(self.close_overlay)
         self.calibration_editor.save.connect(self._save_overlay_calibration)
@@ -764,34 +771,26 @@ class MainWindow(QMainWindow):
                 "Détection différée : arrêtez ou terminez le dessin avant de recalibrer."
             )
             return False
-        window = self.locator.find()
         profile = None
         try:
+            window = self.locator.find()
             if window:
-                screenshot = self._grab_for_vision(window.rect)
-                expected = self._expected_canvas_for_capture(window.rect, screenshot)
-                profile = self.detector.auto_profile(
-                    screenshot,
-                    expected_canvas=expected,
-                )
-                if profile:
-                    profile = profile.translated(window.rect.left, window.rect.top)
+                regions = (window.rect,)
             else:
-                monitors = self.capture.monitor_bounds()
-                regions = monitors or (self.capture.virtual_bounds(),)
-                for bounds in regions:
+                regions = self.capture.monitor_bounds() or (self.capture.virtual_bounds(),)
+            base = self.settings.calibration or reference_profile(
+                AspectRatio(self.ratio_combo.currentData())
+            )
+            for bounds in regions:
+                screenshot = self.capture.grab_window(window) if window else None
+                if screenshot is None:
                     screenshot = self._grab_for_vision(bounds)
-                    expected = self._expected_canvas_for_capture(bounds, screenshot)
-                    candidate = self.detector.auto_profile(
-                        screenshot,
-                        expected_canvas=expected,
-                    )
-                    if candidate is None:
-                        continue
-                    candidate = candidate.translated(bounds.left, bounds.top)
-                    if profile is None or candidate.confidence > profile.confidence:
-                        profile = candidate
+                candidate = self.detector.auto_profile(screenshot, base_profile=base)
+                if candidate is not None:
+                    profile = candidate.translated(bounds.left, bounds.top)
+                    break
         except Exception as exc:
+            self.detection_label.setText("Capture impossible")
             if show_warning:
                 QMessageBox.warning(self, "Capture impossible", str(exc))
             return False
@@ -810,24 +809,55 @@ class MainWindow(QMainWindow):
         self.store.save(self.settings)
         self._validated_calibration_signature = None
         self._rebind_resume_journal_after_calibration()
-        self.detection_label.setText(f"Heartopia détecté · {profile.confidence:.0%}")
-        self.status_label.setText("La toile et les commandes Heartopia ont été calibrées.")
+        self.detection_label.setText("Toile détectée")
+        self.status_label.setText(self._canvas_detection_message(profile))
         self._refresh_overlay()
         return True
 
-    def _expected_canvas_for_capture(self, bounds, image):  # type: ignore[no-untyped-def]
-        if self.settings.calibration is not None:
-            return localize_profile(
-                self.settings.calibration,
-                bounds,
-                image.shape[1],
-                image.shape[0],
-            ).canvas
-        return (
-            reference_profile(AspectRatio(self.ratio_combo.currentData()))
-            .scaled_to(image.shape[1], image.shape[0])
-            .canvas
-        )
+    def _canvas_detection_message(self, profile: CalibrationProfile) -> str:
+        rect = profile.canvas
+        message = f"Toile détectée · {rect.width:.0f} × {rect.height:.0f} px"
+        if not canvas_matches_grid_aspect(rect, self.current_canvas_size()):
+            message += " · vérifiez le format choisi"
+        return message
+
+    def _overlay_display_geometry(self):  # type: ignore[no-untyped-def]
+        window = self.locator.find()
+        if window is None:
+            return None
+        screen = self.overlay.target_screen or self.screen()
+        return window, screen.geometry().getRect(), screen.devicePixelRatio()
+
+    def _check_overlay_geometry(self) -> None:
+        if not self.overlay_toolbar.isVisible() or self._automation_is_active():
+            return
+        geometry = self._overlay_display_geometry()
+        if geometry is None or geometry == self._overlay_geometry:
+            self._overlay_geometry = geometry
+            self._pending_overlay_geometry = None
+            return
+        # Attendre que la fenêtre soit stabilisée avant de mesurer son contenu.
+        if geometry != self._pending_overlay_geometry:
+            self._pending_overlay_geometry = geometry
+            return
+        self._redetect_from_overlay(reposition=True)
+
+    def _redetect_from_overlay(self, *, reposition: bool = False) -> None:
+        if self._automation_is_active():
+            return
+        previous_screen = self.overlay.target_screen
+        self._overlay_geometry_timer.stop()
+        if self.detect_heartopia(show_warning=False):
+            message = self.status_label.text()
+            screen = self.overlay.target_screen
+            if screen and (reposition or screen != previous_screen):
+                self.overlay_toolbar.place_at_top_center(screen.availableGeometry())
+        else:
+            message = "Toile introuvable · affichez son cadre complet puis réessayez"
+        self.overlay_toolbar.status_label.setText(message)
+        self._overlay_geometry = self._overlay_display_geometry()
+        self._pending_overlay_geometry = None
+        self._overlay_geometry_timer.start()
 
     def open_calibration(self) -> None:
         if self.runner_thread and self.runner_thread.isRunning():
@@ -965,7 +995,7 @@ class MainWindow(QMainWindow):
         self.overlay_toolbar.repair_button.setEnabled(ready)
         if detected:
             self.overlay_toolbar.status_label.setText(
-                "Heartopia détecté · vérifiez les repères avant de démarrer"
+                self._canvas_detection_message(self.settings.calibration)
             )
         elif fallback_created:
             self.overlay_toolbar.status_label.setText(
@@ -976,12 +1006,16 @@ class MainWindow(QMainWindow):
                 "Détection non concluante · repères sauvegardés conservés"
             )
         self.showMinimized()
+        self._overlay_geometry = self._overlay_display_geometry()
+        self._pending_overlay_geometry = None
+        self._overlay_geometry_timer.start()
 
     def _refresh_overlay(self) -> None:
         if self.settings.calibration:
             self.overlay.configure(self.settings.calibration, self.current_canvas_size())
 
     def close_overlay(self) -> None:
+        self._overlay_geometry_timer.stop()
         if self.runner and self.runner.state in (AutomationState.RUNNING, AutomationState.PAUSED):
             self.stop_automation()
         self.overlay.hide()
@@ -2179,7 +2213,8 @@ class MainWindow(QMainWindow):
                     "sélectionné dans Dessinopia.",
                     True,
                 )
-            self._adopt_detected_canvas(profile, detection.rect, assessment.confidence)
+            if assessment.evidence == CanvasEvidence.PAINTABLE_AREA:
+                self._adopt_detected_canvas(profile, detection.rect, assessment.confidence)
             return True, "", True
         except Exception as exc:
             return False, f"La capture de contrôle a échoué : {exc}", False
@@ -2360,6 +2395,7 @@ class MainWindow(QMainWindow):
         self.store.save(self.settings)
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self._overlay_geometry_timer.stop()
         self.stop_automation()
         self.overlay.close()
         self.overlay_toolbar.close()

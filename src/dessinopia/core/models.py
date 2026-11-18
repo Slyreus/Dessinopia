@@ -438,8 +438,8 @@ class CalibrationProfile:
                 Point(**brush_data)
                 if brush_data
                 else Point(
-                    back_button.x - 226 * reference_width / 2560,
-                    back_button.y + 472 * reference_height / 1440,
+                    pencil_tool.x + 136 * reference_width / 2560,
+                    pencil_tool.y + 183 * reference_height / 1440,
                 )
             ),
             pencil_tool=pencil_tool,
@@ -492,11 +492,11 @@ REFERENCE_PROFILE_2560 = CalibrationProfile(
     canvas=ScreenRect(813, 333, 879, 879),
     palette_icon=Point(2176, 633),
     back_button=Point(2399, 325),
-    small_brush=Point(2173, 797),
+    small_brush=Point(376, 559),
     pencil_tool=Point(240, 376),
     fill_tool=Point(240, 477),
     main_colors=CenterGrid(Point(2302, 347), Point(2466, 1153), 2, 8),
-    shades=CenterGrid(Point(2302, 551), Point(2466, 1037), 2, 5),
+    shades=CenterGrid(Point(2302, 551), Point(2466, 1032), 2, 5),
     confidence=0.72,
     source="reference-images",
 )

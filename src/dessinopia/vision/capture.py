@@ -20,6 +20,17 @@ class WindowInfo:
     rect: ScreenRect
 
 
+def _client_bounds(hwnd: int) -> ScreenRect | None:
+    rect = wintypes.RECT()
+    origin = wintypes.POINT()
+    user32 = ctypes.windll.user32
+    if not user32.GetClientRect(hwnd, ctypes.byref(rect)) or not user32.ClientToScreen(
+        hwnd, ctypes.byref(origin)
+    ):
+        return None
+    return ScreenRect(origin.x, origin.y, rect.right, rect.bottom)
+
+
 @dataclass(frozen=True, slots=True)
 class NativeMonitor:
     """Physical desktop coordinates reported by Windows."""
@@ -155,20 +166,9 @@ class HeartopiaWindowLocator:
             # détection d'écran reste disponible si une future version les modifie.
             if not self.is_candidate(title, int(process_id.value)):
                 return True
-            rect = wintypes.RECT()
-            if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                matches.append(
-                    WindowInfo(
-                        handle=int(hwnd),
-                        title=title,
-                        rect=ScreenRect(
-                            float(rect.left),
-                            float(rect.top),
-                            float(rect.right - rect.left),
-                            float(rect.bottom - rect.top),
-                        ),
-                    )
-                )
+            bounds = _client_bounds(hwnd)
+            if bounds and bounds.width > 0 and bounds.height > 0:
+                matches.append(WindowInfo(int(hwnd), title, bounds))
             return True
 
         user32.EnumWindows(callback, 0)
@@ -178,6 +178,68 @@ class HeartopiaWindowLocator:
 
 
 class ScreenCapture:
+    @staticmethod
+    def grab_window(window: WindowInfo) -> np.ndarray | None:
+        """Read one frame from the game itself, excluding overlapping windows."""
+        from PySide6.QtCore import QEventLoop, QTimer
+        from PySide6.QtGui import QImage
+        from PySide6.QtMultimedia import QMediaCaptureSession, QVideoFrame, QVideoSink, QWindowCapture
+
+        capture = QWindowCapture()
+        matches = [
+            item for item in capture.capturableWindows() if item.description() == window.title
+        ]
+        if len(matches) != 1:
+            return None
+        session = QMediaCaptureSession()
+        sink = QVideoSink()
+        session.setWindowCapture(capture)
+        session.setVideoSink(sink)
+        capture.setWindow(matches[0])
+        loop = QEventLoop()
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(loop.quit)
+        capture.errorOccurred.connect(loop.quit)
+
+        def frame_ready(frame: QVideoFrame) -> None:
+            if frame.isValid():
+                loop.quit()
+
+        sink.videoFrameChanged.connect(frame_ready)
+        try:
+            timer.start(1800)
+            capture.start()
+            if not sink.videoFrame().isValid() and capture.error() == QWindowCapture.Error.NoError:
+                loop.exec(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            image = sink.videoFrame().toImage()
+            if image.isNull() or _client_bounds(window.handle) != window.rect:
+                return None
+            width, height = int(window.rect.width), int(window.rect.height)
+            if (image.width(), image.height()) != (width, height):
+                # WGC may include the title bar and visible frame in windowed mode.
+                frame = wintypes.RECT()
+                hr = ctypes.windll.dwmapi.DwmGetWindowAttribute(
+                    window.handle, 9, ctypes.byref(frame), ctypes.sizeof(frame)
+                )
+                x, y = int(window.rect.left - frame.left), int(window.rect.top - frame.top)
+                if (
+                    hr
+                    or (frame.right - frame.left, frame.bottom - frame.top)
+                    != (image.width(), image.height())
+                    or min(x, y) < 0
+                    or x + width > image.width()
+                    or y + height > image.height()
+                ):
+                    return None
+                image = image.copy(x, y, width, height)
+            image = image.convertToFormat(QImage.Format.Format_RGB888)
+            rows = np.frombuffer(image.constBits(), np.uint8).reshape(height, image.bytesPerLine())
+            return rows[:, :width * 3].reshape(height, width, 3).copy()
+        finally:
+            timer.stop()
+            capture.stop()
+
     @staticmethod
     def _rect_from_monitor(monitor: dict[str, int]) -> ScreenRect:
         return ScreenRect(

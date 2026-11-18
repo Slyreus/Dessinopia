@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 import cv2
@@ -14,6 +14,7 @@ from dessinopia.core.models import (
     ScreenRect,
 )
 from dessinopia.core.palette import MAIN_CELLS, colors_for_group
+from dessinopia.vision.editor_geometry import locate_editor, measure_controls
 
 
 class PaletteState(StrEnum):
@@ -29,6 +30,7 @@ class CanvasEvidence(StrEnum):
     LIGHT_SURFACE = "surface claire"
     CALIBRATED_FRAME = "cadre calibré"
     SURFACE_AND_FRAME = "surface et cadre"
+    PAINTABLE_AREA = "surface peignable dans le cadre de l’atelier"
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,6 +320,11 @@ class HeartopiaDetector:
     ) -> CanvasAssessment:
         """Assess the calibrated canvas using its surface and persistent frame."""
 
+        board = locate_editor(rgb, expected)
+        if board is not None:
+            return CanvasAssessment(
+                CanvasDetection(board.canvas, 1.0), CanvasEvidence.PAINTABLE_AREA, 1.0
+            )
         surface = self.detect_canvas(rgb)
         surface_near = surface is not None and canvas_matches_calibration(
             surface.rect,
@@ -361,29 +368,20 @@ class HeartopiaDetector:
         name: str = "Détection automatique",
         *,
         expected_canvas: ScreenRect | None = None,
+        base_profile: CalibrationProfile | None = None,
     ) -> CalibrationProfile | None:
         height, width = rgb.shape[:2]
-        detected = self.detect_canvas(rgb)
-        if detected is None and expected_canvas is not None:
-            detected = self.detect_canvas_near(rgb, expected_canvas)
-        if detected is None:
+        base = (base_profile or REFERENCE_PROFILE_2560).remapped_to(
+            ScreenRect(0, 0, width, height)
+        )
+        board = locate_editor(rgb, expected_canvas or base.canvas)
+        if board is None:
             return None
-        scaled = REFERENCE_PROFILE_2560.scaled_to(width, height)
-        return CalibrationProfile(
+        return replace(
+            measure_controls(rgb, base, board.frame),
             name=name,
-            reference_width=width,
-            reference_height=height,
-            canvas=detected.rect,
-            palette_icon=scaled.palette_icon,
-            back_button=scaled.back_button,
-            small_brush=scaled.small_brush,
-            pencil_tool=scaled.pencil_tool,
-            fill_tool=scaled.fill_tool,
-            pencil_tool_roi=scaled.pencil_region,
-            fill_tool_roi=scaled.fill_region,
-            main_colors=scaled.main_colors,
-            shades=scaled.shades,
-            confidence=detected.confidence,
+            canvas=board.canvas,
+            confidence=1.0,
             source="automatic",
         )
 

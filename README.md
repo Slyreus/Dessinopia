@@ -2,7 +2,7 @@
 
 Convertit une image et la reproduit automatiquement dans l’atelier de peinture de **Heartopia**.
 
-> Version 1.0.0 pour Windows 11. Ouvrez Heartopia en mode fenêtré sans bordure.
+> Version 1.0.1 pour Windows 11. Ouvrez Heartopia en mode fenêtré sans bordure.
 
 ## Télécharger
 
@@ -33,7 +33,7 @@ puis lancez `Dessinopia.exe`.
 
 1. Ouvrez l’atelier de peinture dans Heartopia.
 2. Importez une image et choisissez son format. Pour des contours francs, gardez **Pixels nets** et le tramage **Aucun**. Le mode **Taille réelle (1:1)** place chaque pixel source dans une seule case, avec un recadrage centré si l’image dépasse la toile. **Couleurs max.** limite la palette à 16 nuances par défaut. Après un changement, cliquez sur **Convertir l'image** pour actualiser l’aperçu.
-3. Cliquez sur **Détecter Heartopia**, puis vérifiez les repères sur l’overlay.
+3. Cliquez sur **Détecter / afficher l’overlay**. La grille suit la surface peignable et se recale lorsque la fenêtre change de taille ou d’écran, tant que le dessin est à l’arrêt. Après un changement de toile, cliquez sur **Redétecter la toile** dans le bandeau. **Repères** permet un ajustement manuel.
 4. Cliquez sur **Démarrer** pour tester les cinq points au premier lancement du dessin, ou sur **Démarrer sans test** pour utiliser directement les repères affichés.
 5. Confirmez le lancement et laissez la souris libre pendant le dessin. **F8** met le dessin en pause et **F12** l’arrête.
 
