@@ -7,6 +7,7 @@ from contextlib import suppress
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -238,6 +239,14 @@ class OverlayToolbar(QFrame):
         )
         self.pause_button = QPushButton("Pause")
         self.resume_button = QPushButton("Reprendre")
+        self.tempo_combo = QComboBox()
+        self.tempo_combo.setAccessibleName("Tempo")
+        self.tempo_combo.setToolTip("Modifiable pendant la pause. Appliqué à la reprise.")
+        self.tempo_control = QWidget()
+        tempo_layout = QHBoxLayout(self.tempo_control)
+        tempo_layout.setContentsMargins(0, 0, 0, 0)
+        tempo_layout.addWidget(QLabel("Tempo"))
+        tempo_layout.addWidget(self.tempo_combo)
         self.stop_button = QPushButton("Arrêter")
         self.stop_button.setObjectName("danger")
         self.test_button = QPushButton("Test 5 points")
@@ -258,10 +267,11 @@ class OverlayToolbar(QFrame):
         self.reset_button.setToolTip(
             "Abandonner le checkpoint et recommencer le plan depuis zéro"
         )
-        self.action_buttons = (
+        self.action_widgets = (
             self.start_button,
             self.start_without_test_button,
             self.pause_button,
+            self.tempo_control,
             self.resume_button,
             self.stop_button,
             self.test_button,
@@ -270,9 +280,9 @@ class OverlayToolbar(QFrame):
             self.repair_button,
             self.reset_button,
         )
-        for column, button in enumerate(self.action_buttons):
-            button.setMinimumHeight(28)
-            self.button_layout.addWidget(button, 0, column)
+        for column, widget in enumerate(self.action_widgets):
+            widget.setMinimumHeight(28)
+            self.button_layout.addWidget(widget, 0, column)
         layout.addLayout(self.button_layout)
         self.start_button.clicked.connect(self.start_requested)
         self.start_without_test_button.clicked.connect(self.start_without_test_requested)
@@ -299,7 +309,7 @@ class OverlayToolbar(QFrame):
         """Use a wide, shallow strip that does not cover the canvas on small screens."""
 
         target_width = max(320, min(1220, screen_geometry.width() - 24))
-        widths = [button.sizeHint().width() for button in self.action_buttons]
+        widths = [widget.sizeHint().width() for widget in self.action_widgets]
         margins = self.layout().contentsMargins()
         available = target_width - margins.left() - margins.right()
         for rows in range(1, len(widths) + 1):
@@ -307,21 +317,30 @@ class OverlayToolbar(QFrame):
             needed = sum(max(widths[column::columns]) for column in range(columns))
             if needed + (columns - 1) * self.button_layout.spacing() <= available:
                 break
-        for index, button in enumerate(self.action_buttons):
-            self.button_layout.removeWidget(button)
-            self.button_layout.addWidget(button, *divmod(index, columns))
+        for index, widget in enumerate(self.action_widgets):
+            self.button_layout.removeWidget(widget)
+            self.button_layout.addWidget(widget, *divmod(index, columns))
         self.setFixedWidth(target_width)
         self.adjustSize()
         x = screen_geometry.left() + max(0, (screen_geometry.width() - self.width()) // 2)
         self.move(x, screen_geometry.top() + 8)
 
-    def set_running(self, running: bool, paused: bool = False, stopping: bool = False) -> None:
+    def set_running(
+        self,
+        running: bool,
+        *,
+        paused: bool = False,
+        pausing: bool = False,
+        stopping: bool = False,
+        tempo_editable: bool = False,
+    ) -> None:
         active = running or stopping
         self._active = active
         self.start_button.setEnabled(not active)
         self.start_without_test_button.setEnabled(not active)
-        self.pause_button.setEnabled(running and not paused and not stopping)
+        self.pause_button.setEnabled(running and not (paused or pausing or stopping))
         self.resume_button.setEnabled(running and paused and not stopping)
+        self.tempo_control.setEnabled(tempo_editable)
         self.stop_button.setEnabled(running and not stopping)
         self.test_button.setEnabled(not active)
         self.calibration_button.setEnabled(not active)

@@ -60,9 +60,7 @@ class HybridAutomationRunner(AutomationRunner):
         resume_from_pixels: int = 0,
         force_verification_failures: bool = False,
     ) -> None:
-        self.verify_tool = verify_tool
         self.verify_fill = verify_fill
-        self._active_tool = DrawingTool.UNKNOWN
         self.manual_recovery_required = False
         super().__init__(
             plan,  # type: ignore[arg-type]
@@ -109,6 +107,7 @@ class HybridAutomationRunner(AutomationRunner):
             return
 
         self._painted = self.resume_from_pixels
+        self._checked_resume_revision = 0
         self._mouse = None
         self._active_tool = DrawingTool.UNKNOWN
         try:
@@ -191,22 +190,6 @@ class HybridAutomationRunner(AutomationRunner):
             if self._mouse:
                 self._mouse.release_all()
 
-    def _open_verified_family(
-        self,
-        column: int,
-        row: int,
-        expected_group: int,
-        family_name: str,
-    ) -> None:
-        """Use the same bounded, state-aware recovery as the pencil runner."""
-
-        super()._open_verified_family(
-            column,
-            row,
-            expected_group,
-            family_name,
-        )
-
     def _tool_handshake(self) -> None:
         self.callbacks.status("Test de sécurité des outils — pot puis crayon")
         self._select_and_verify_tool(DrawingTool.FILL)
@@ -216,49 +199,6 @@ class HybridAutomationRunner(AutomationRunner):
         if self._active_tool is expected:
             return
         self._select_and_verify_tool(expected)
-
-    def _select_and_verify_tool(self, expected: DrawingTool) -> None:
-        point = (
-            self.calibration.pencil_tool
-            if expected is DrawingTool.PENCIL
-            else self.calibration.fill_tool
-        )
-        safe_region = (
-            self.calibration.pencil_region
-            if expected is DrawingTool.PENCIL
-            else self.calibration.fill_region
-        )
-        for attempt in range(1, self._tool_selection_attempts + 1):
-            self.callbacks.status(
-                f"Activation de l'outil {expected.value} — contrôle "
-                f"{attempt}/{self._tool_selection_attempts}"
-            )
-            self._click_at(point, safe_region=safe_region)
-            if self.verify_tool is None:
-                self._active_tool = expected
-                return
-            result = self.verify_tool(expected)
-            if isinstance(result, ToolObservation):
-                self.callbacks.status(f"Outil observé — {result.summary}")
-                accepted = result.matches(expected)
-            elif isinstance(result, bool):
-                accepted = result
-            else:
-                raise TypeError("La vérification d'outil a renvoyé un résultat invalide")
-            if accepted:
-                self._active_tool = expected
-                return
-        if self.force_verification_failures:
-            self._active_tool = expected
-            self.callbacks.status(
-                f"Mode Sans échec — outil {expected.value} accepté sans confirmation"
-            )
-            return
-        self._active_tool = DrawingTool.UNKNOWN
-        raise RuntimeError(
-            f"L'outil {expected.value} n'a pas pu être confirmé. "
-            "Aucun clic n'a été envoyé sur la toile."
-        )
 
     def _execute_shade(self, shade: HybridShadePass, pixels_to_skip: int) -> int:
         # This explicit two-loop order is a safety invariant: every planned fence
@@ -285,25 +225,33 @@ class HybridAutomationRunner(AutomationRunner):
         return pixels_to_skip
 
     def _execute_fill_operation(self, operation: FillOperation) -> None:
-        self._checkpoint()
-        before, missing_cells = self._verify_fill_operation(
-            operation, FillVerificationPhase.BEFORE
-        )
-        self._checkpoint()
-        if before is FillCheckState.ALREADY_FILLED:
-            self.callbacks.status("Zone déjà remplie — reprise validée sans nouveau clic")
-            self._commit_pixels(operation.filled_pixel_count)
-            return
-        if before is FillCheckState.FALLBACK:
-            self._repair_and_verify_atomically(operation, missing_cells)
-            return
-        if before is not FillCheckState.READY:
-            raise RuntimeError(
-                "Le contrôle avant remplissage a renvoyé un état incohérent : "
-                f"{before.value}."
+        while True:
+            self._checkpoint()
+            revision = self._resume_revision
+            before, missing_cells = self._verify_fill_operation(
+                operation, FillVerificationPhase.BEFORE
             )
+            self._checkpoint()
+            if revision != self._resume_revision:
+                continue
+            if before is FillCheckState.ALREADY_FILLED:
+                self.callbacks.status("Zone déjà remplie — reprise validée sans nouveau clic")
+                self._commit_pixels(operation.filled_pixel_count)
+                return
+            if before is FillCheckState.FALLBACK:
+                self._repair_and_verify_atomically(operation, missing_cells)
+                return
+            if before is not FillCheckState.READY:
+                raise RuntimeError(
+                    "Le contrôle avant remplissage a renvoyé un état incohérent : "
+                    f"{before.value}."
+                )
 
-        self._ensure_tool(DrawingTool.FILL)
+            self._ensure_tool(DrawingTool.FILL)
+            self._prepare_paint(operation.palette_index, DrawingTool.FILL)
+            if revision == self._resume_revision:
+                break
+            # Une pause peut avoir modifié la toile après le contrôle du contour.
         seed = self.calibration.canvas.cell_center(
             operation.seed.column,
             operation.seed.row,

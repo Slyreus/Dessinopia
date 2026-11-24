@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, ImageOps
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -163,6 +163,8 @@ class MainWindow(QMainWindow):
         self.hybrid_plan: HybridPaintingPlan | None = None
         self.runner: AutomationWorker | None = None
         self.runner_thread: AutomationThread | None = None
+        self._automation_state = AutomationState.IDLE
+        self._last_automation_status = ""
         self._run_mode = "idle"
         self._hole_repair_pass = 0
         self._stop_requested = False
@@ -351,11 +353,15 @@ class MainWindow(QMainWindow):
         self.noise_checkbox.toggled.connect(self._settings_changed)
         form.addRow(self.noise_checkbox)
         self.tempo_combo = QComboBox()
-        self.tempo_combo.addItem("Très lent (anti-surcharge)", "tres_lent")
-        self.tempo_combo.addItem("Lent", "lent")
-        self.tempo_combo.addItem("Prudent", "prudent")
-        self.tempo_combo.addItem("Normal", "equilibre")
-        self.tempo_combo.addItem("Rapide", "rapide")
+        for key, label in (
+            ("tres_lent", "Très lent"),
+            ("lent", "Lent"),
+            ("prudent", "Prudent"),
+            ("equilibre", "Normal"),
+            ("rapide", "Rapide"),
+        ):
+            self.tempo_combo.addItem(label, key)
+            self.overlay_toolbar.tempo_combo.addItem(label, key)
         self.tempo_combo.setToolTip(
             "Temporisation des déplacements et des clics pendant le tracé et les retouches. "
             "Le mode Très lent réduit "
@@ -457,6 +463,7 @@ class MainWindow(QMainWindow):
         self.overlay_toolbar.test_requested.connect(self.start_calibration_test)
         self.overlay_toolbar.pause_requested.connect(self.pause_automation)
         self.overlay_toolbar.resume_requested.connect(self.resume_automation)
+        self.overlay_toolbar.tempo_combo.activated.connect(self._change_paused_tempo)
         self.overlay_toolbar.reset_requested.connect(self.reset_resume)
         self.overlay_toolbar.stop_requested.connect(self.stop_automation)
         self.overlay_toolbar.calibrate_requested.connect(self.open_calibration)
@@ -1032,7 +1039,9 @@ class MainWindow(QMainWindow):
 
     def close_overlay(self) -> None:
         self._overlay_geometry_timer.stop()
-        if self.runner and self.runner.state in (AutomationState.RUNNING, AutomationState.PAUSED):
+        if self.runner and self.runner.state in (
+            AutomationState.RUNNING, AutomationState.PAUSING, AutomationState.PAUSED
+        ):
             self.stop_automation()
         self.overlay.hide()
         self.overlay_toolbar.hide()
@@ -1570,6 +1579,7 @@ class MainWindow(QMainWindow):
             return
         self.runner = runner
         self._run_mode = mode
+        self._last_automation_status = self.overlay_toolbar.status_label.text()
         self._set_project_controls_locked(True)
         self._append_diagnostic(f"Lancement du mode {mode}")
         self.runner_thread = AutomationThread(runner)
@@ -1637,6 +1647,24 @@ class MainWindow(QMainWindow):
         if self.runner:
             self.runner.resume()
 
+    def _change_paused_tempo(self) -> None:
+        combo = self.overlay_toolbar.tempo_combo
+        tempo = combo.currentData()
+        timing = TIMING_PRESETS[tempo]
+        if not isinstance(self.runner, AutomationRunner) or not self.runner.set_paused_timing(timing):
+            self._select_combo(combo, self.settings.tempo)
+            return
+        self.settings.tempo = tempo
+        self.settings.timing = timing
+        with QSignalBlocker(self.tempo_combo):
+            self._select_combo(self.tempo_combo, tempo)
+        self.store.save(self.settings)
+        self._update_filter_controls()
+        self._update_plan_summary()
+        message = f"Tempo {combo.currentText().lower()} à la reprise."
+        self.overlay_toolbar.status_label.setText(message)
+        self._append_diagnostic(message)
+
     def reset_resume(self) -> None:
         """Explicitly abandon the checkpoint and restart the immutable plan at zero."""
 
@@ -1679,11 +1707,24 @@ class MainWindow(QMainWindow):
 
     def _automation_state_changed(self, value: str) -> None:
         state = AutomationState(value)
+        pause_states = (AutomationState.PAUSING, AutomationState.PAUSED)
+        was_pausing_or_paused = self._automation_state in pause_states
+        self._automation_state = state
+        tempo_editable = state is AutomationState.PAUSED and isinstance(self.runner, AutomationRunner)
         if state is AutomationState.COMPLETED and self._run_mode in ("draw", "hole_repair"):
             value = "Contrôle"
         elif state is AutomationState.RUNNING and self._run_mode == "hole_repair":
             value = "Retouches en cours"
         self.overlay_toolbar.state_label.setText(value)
+        self.overlay_toolbar.status_label.setWordWrap(state in pause_states)
+        if state is AutomationState.PAUSING:
+            self.overlay_toolbar.status_label.setText("Le trait en cours se termine.")
+            self._append_diagnostic(value)
+        elif tempo_editable:
+            self.overlay_toolbar.status_label.setText("Vous pouvez modifier le tempo.")
+            self._append_diagnostic(value)
+        elif was_pausing_or_paused and state not in pause_states:
+            self.overlay_toolbar.status_label.setText(self._last_automation_status)
         if self._run_mode == "draw" and isinstance(self.runner, AutomationRunner):
             if state in (AutomationState.STOPPED, AutomationState.ERROR, AutomationState.COMPLETED):
                 self._resume_pixels = max(self._resume_pixels, self.runner.painted_pixels)
@@ -1705,17 +1746,21 @@ class MainWindow(QMainWindow):
                     recovery=recovery,
                     force=True,
                 )
-        running = state in (AutomationState.RUNNING, AutomationState.PAUSED)
+        running = state is AutomationState.RUNNING or state in pause_states
         self.overlay_toolbar.set_running(
             running,
             paused=state is AutomationState.PAUSED,
+            pausing=state is AutomationState.PAUSING,
             stopping=state is AutomationState.STOPPING,
+            tempo_editable=tempo_editable,
         )
         if not running and state is not AutomationState.STOPPING:
             self._update_resume_ui()
 
     def _automation_status_changed(self, message: str) -> None:
-        self.overlay_toolbar.status_label.setText(message)
+        self._last_automation_status = message
+        if self._automation_state not in (AutomationState.PAUSING, AutomationState.PAUSED):
+            self.overlay_toolbar.status_label.setText(message)
         self._append_diagnostic(message)
 
     def _automation_progress_changed(self, done: int, total: int) -> None:
@@ -2471,6 +2516,7 @@ class MainWindow(QMainWindow):
         self.resize_combo.setEnabled(self.settings.fit_mode is not FitMode.NATIVE)
         self.dither_strength.setEnabled(self.settings.dither_mode is not DitherMode.NONE)
         tempo = self.settings.tempo
+        self._select_combo(self.overlay_toolbar.tempo_combo, tempo)
         self.tempo_advice.setText(TEMPO_ADVICE[tempo])
         color = {"rapide": "#ff8282", "equilibre": "#ffc078"}.get(tempo, "#b4cbc5")
         self.tempo_advice.setStyleSheet(f"color: {color};")

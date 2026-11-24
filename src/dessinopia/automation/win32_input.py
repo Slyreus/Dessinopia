@@ -95,7 +95,7 @@ class _EmergencyKeyWatcher:
 
 
 class _ToggleKeyWatcher:
-    """Latch one press until the automation reaches a pause-safe boundary."""
+    """Latch one press until the automation reads it."""
 
     def __init__(
         self,
@@ -109,6 +109,7 @@ class _ToggleKeyWatcher:
         self._was_down = bool(initial & 0x8000)
         self._requested = threading.Event()
         self._closed = threading.Event()
+        self._lock = threading.Lock()
         self._thread = threading.Thread(
             target=self._watch,
             name="Dessinopia-F8-Pause",
@@ -117,11 +118,12 @@ class _ToggleKeyWatcher:
         self._thread.start()
 
     def consume(self) -> bool:
-        self._sample()
-        if not self._requested.is_set():
-            return False
-        self._requested.clear()
-        return True
+        with self._lock:
+            self._sample()
+            if not self._requested.is_set():
+                return False
+            self._requested.clear()
+            return True
 
     def close(self) -> None:
         self._closed.set()
@@ -130,7 +132,8 @@ class _ToggleKeyWatcher:
 
     def _watch(self) -> None:
         while not self._closed.wait(self._interval):
-            self._sample()
+            with self._lock:
+                self._sample()
 
     def _sample(self) -> None:
         state = int(self._poll_key_state())

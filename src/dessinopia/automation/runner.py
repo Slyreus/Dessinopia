@@ -30,6 +30,7 @@ from dessinopia.vision.tool_observer import (
 class AutomationState(StrEnum):
     IDLE = "Prêt"
     RUNNING = "Dessin en cours"
+    PAUSING = "Pause demandée"
     PAUSED = "En pause"
     STOPPING = "Arrêt en cours"
     STOPPED = "Arrêté"
@@ -100,7 +101,10 @@ class AutomationRunner:
         self._run_gate.set()
         self._state_lock = threading.RLock()
         self._state = AutomationState.IDLE
+        self._resume_revision = int(resume_from_pixels > 0)
+        self._checked_resume_revision = 0
         self._mouse: MouseController | None = None
+        self._active_tool = DrawingTool.UNKNOWN
         self._painted = resume_from_pixels
         self._last_palette_summary = "aucun diagnostic disponible"
         self._last_palette_observation: PaletteObservation | None = None
@@ -126,19 +130,29 @@ class AutomationRunner:
         with self._state_lock:
             if self._state is AutomationState.RUNNING:
                 self._run_gate.clear()
-                self._set_state(AutomationState.PAUSED)
+                self._set_state(AutomationState.PAUSING)
 
     def resume(self) -> None:
         with self._state_lock:
-            if self._state is AutomationState.PAUSED:
+            if self._state in (AutomationState.PAUSING, AutomationState.PAUSED):
+                self._resume_revision += 1
                 self._run_gate.set()
                 self._set_state(AutomationState.RUNNING)
 
+    def set_paused_timing(self, timing: TimingProfile) -> bool:
+        with self._state_lock:
+            if self._state is not AutomationState.PAUSED:
+                return False
+            self.timing = timing
+            return True
+
     def stop(self) -> None:
         with self._state_lock:
-            if self._state in (AutomationState.RUNNING, AutomationState.PAUSED):
-                self._set_state(AutomationState.STOPPING)
             self._stop.set()
+            if self._state in (
+                AutomationState.RUNNING, AutomationState.PAUSING, AutomationState.PAUSED
+            ):
+                self._set_state(AutomationState.STOPPING)
             self._run_gate.set()
 
     def run(self) -> None:
@@ -156,6 +170,7 @@ class AutomationRunner:
             self._set_state(AutomationState.STOPPED)
             return
         self._painted = self.resume_from_pixels
+        self._checked_resume_revision = 0
         self._mouse = None
         try:
             self._validate_tool_markers()
@@ -170,7 +185,7 @@ class AutomationRunner:
                 self.callbacks.status(
                     "Checkpoint complet — remise de sécurité sur le crayon"
                 )
-                self._select_and_verify_pencil()
+                self._select_and_verify_tool(DrawingTool.PENCIL)
                 drawing_tool_selected = True
             for family_number, family in enumerate(self.plan.families, start=1):
                 self._checkpoint()
@@ -194,7 +209,7 @@ class AutomationRunner:
                     # actif. Réarmer explicitement le crayon avant le premier
                     # contact avec la toile empêche alors tout remplissage fortuit.
                     self.callbacks.status("Sélection du crayon et du pinceau le plus fin")
-                    self._select_and_verify_pencil()
+                    self._select_and_verify_tool(DrawingTool.PENCIL)
                     self._click_at(self.calibration.small_brush)
                     drawing_tool_selected = True
 
@@ -243,6 +258,8 @@ class AutomationRunner:
         row: int,
         expected_group: int,
         family_name: str,
+        *,
+        strict: bool = False,
     ) -> None:
         """Open a family with bounded, state-aware recovery.
 
@@ -257,7 +274,7 @@ class AutomationRunner:
 
             observation = self._last_palette_observation
             if observation is None or observation.state is PaletteState.UNKNOWN:
-                if self.force_verification_failures:
+                if self.force_verification_failures and not strict:
                     self.callbacks.status(
                         f"Mode Sans échec — famille « {family_name} » supposée ouverte"
                     )
@@ -282,7 +299,7 @@ class AutomationRunner:
             if observation.state is PaletteState.SHADES:
                 self._click_at(self.calibration.back_button, palette_delay=True)
 
-        if self.force_verification_failures:
+        if self.force_verification_failures and not strict:
             self.callbacks.status(
                 f"Mode Sans échec — dernière sélection « {family_name} » conservée"
             )
@@ -355,7 +372,7 @@ class AutomationRunner:
     def _drag_stroke(self, stroke: Stroke) -> None:
         """Paint one logical component with a single held-button gesture."""
 
-        self._checkpoint()
+        self._prepare_paint(stroke.palette_index, DrawingTool.PENCIL)
         assert self._mouse is not None
         first = self.calibration.canvas.cell_center(
             stroke.start.column,
@@ -443,39 +460,88 @@ class AutomationRunner:
             self._varied(self.timing.cursor_move_seconds),
         )
 
-    def _select_and_verify_pencil(self) -> None:
-        for attempt in range(1, self._tool_selection_attempts + 1):
-            self._click_at(
-                self.calibration.pencil_tool,
-                safe_region=self.calibration.pencil_region,
-            )
-            if self.verify_tool is None:
+    def _prepare_paint(self, palette_index: int, tool: DrawingTool) -> None:
+        while True:
+            self._checkpoint()
+            revision = self._resume_revision
+            if revision == self._checked_resume_revision:
                 return
-            result = self.verify_tool(DrawingTool.PENCIL)
+            self._verify_resume_paint(palette_index, tool)
+            self._checked_resume_revision = revision
+
+    def _verify_resume_paint(self, palette_index: int, tool: DrawingTool) -> None:
+        if self.verify_group is None or self.verify_shade is None or self.verify_tool is None:
+            raise RuntimeError("La reprise exige de pouvoir vérifier la palette et l'outil.")
+        color = PALETTE_BY_INDEX[palette_index]
+        family_name = color.name.rsplit(" ", 1)[0]
+        self.callbacks.status(f"Reprise — contrôle de la couleur {color.name} et de l'outil")
+        self._move_cursor_off_canvas()
+        if not self._verify_selected_group(color.group, family_name):
+            observation = self._last_palette_observation
+            if observation is None or observation.state is PaletteState.UNKNOWN:
+                raise RuntimeError(
+                    "La palette est illisible à la reprise. "
+                    "Affichez l'atelier de peinture et la palette principale, puis reprenez."
+                )
+            if observation.state is PaletteState.SHADES:
+                self._click_at(self.calibration.back_button, palette_delay=True)
+            self._open_verified_family(
+                color.main_column, color.main_row, color.group, family_name, strict=True,
+            )
+        self._select_and_verify_tool(tool, strict=True)
+        if tool is DrawingTool.PENCIL:
+            self._click_at(self.calibration.small_brush)
+        self._select_and_verify_shade(palette_index, strict=True)
+        if not self._verify_selected_group(color.group, family_name):
+            raise RuntimeError(
+                f"La famille « {family_name} » ne peut plus être confirmée à la reprise."
+            )
+        self.callbacks.status(f"Reprise — {color.name} et outil {tool.value} vérifiés")
+
+    def _select_and_verify_tool(self, expected: DrawingTool, *, strict: bool = False) -> None:
+        point = (
+            self.calibration.pencil_tool
+            if expected is DrawingTool.PENCIL
+            else self.calibration.fill_tool
+        )
+        safe_region = (
+            self.calibration.pencil_region
+            if expected is DrawingTool.PENCIL
+            else self.calibration.fill_region
+        )
+        for attempt in range(1, self._tool_selection_attempts + 1):
+            self.callbacks.status(
+                f"Activation de l'outil {expected.value} — contrôle "
+                f"{attempt}/{self._tool_selection_attempts}"
+            )
+            self._click_at(point, safe_region=safe_region)
+            if self.verify_tool is None:
+                self._active_tool = expected
+                return
+            result = self.verify_tool(expected)
             if isinstance(result, ToolObservation):
                 self.callbacks.status(f"Outil observé — {result.summary}")
-                accepted = result.matches(DrawingTool.PENCIL)
+                accepted = result.matches(expected)
             elif isinstance(result, bool):
                 accepted = result
             else:
                 raise TypeError("La vérification d'outil a renvoyé un résultat invalide")
             if accepted:
+                self._active_tool = expected
                 return
+        if self.force_verification_failures and not strict:
+            self._active_tool = expected
             self.callbacks.status(
-                "Crayon non confirmé — nouvelle sélection "
-                f"({attempt}/{self._tool_selection_attempts})"
-            )
-        if self.force_verification_failures:
-            self.callbacks.status(
-                "Mode Sans échec — dernier clic Crayon accepté sans confirmation"
+                f"Mode Sans échec — outil {expected.value} accepté sans confirmation"
             )
             return
+        self._active_tool = DrawingTool.UNKNOWN
         raise RuntimeError(
-            "Le crayon n'a pas pu être confirmé après trois sélections. "
+            f"L'outil {expected.value} n'a pas pu être confirmé après trois essais. "
             "Aucun clic n'a été envoyé sur la toile."
         )
 
-    def _select_and_verify_shade(self, palette_index: int) -> None:
+    def _select_and_verify_shade(self, palette_index: int, *, strict: bool = False) -> None:
         color = PALETTE_BY_INDEX[palette_index]
         shade_point = self.calibration.shade_point(
             color.shade_column,
@@ -502,7 +568,7 @@ class AutomationRunner:
             self.callbacks.status(
                 f"{color.name} non confirmée — nouvelle sélection ({attempt}/3)"
             )
-        if self.force_verification_failures:
+        if self.force_verification_failures and not strict:
             self.callbacks.status(
                 f"Mode Sans échec — nuance « {color.name} » acceptée sans confirmation"
             )
@@ -524,28 +590,27 @@ class AutomationRunner:
             time.sleep(min(0.02, remaining))
 
     def _checkpoint(self) -> None:
-        self._motion_checkpoint()
-        self._handle_pause_hotkey()
-        # Event.wait() sans timeout rendrait F12 inopérant tant que le runner est
-        # en pause. Le bouton Arrêter réveille explicitement la porte, mais l'arrêt
-        # d'urgence doit rester global et ne pas dépendre de l'interface Qt.
-        while not self._run_gate.wait(timeout=0.05):
+        # Seul le moteur confirme la pause, après avoir relâché la souris.
+        while True:
             self._motion_checkpoint()
-            self._handle_pause_hotkey()
-        self._motion_checkpoint()
+            with self._state_lock:
+                if self._stop.is_set():
+                    raise AutomationStopped
+                if self._state is AutomationState.PAUSING:
+                    self._set_state(AutomationState.PAUSED)
+                if self._run_gate.is_set():
+                    return
+            # F8 et F12 restent disponibles pendant la pause.
+            self._run_gate.wait(timeout=0.05)
 
     def _handle_pause_hotkey(self) -> None:
         if self._mouse is None or not self._mouse.pause_toggle_requested():
             return
         with self._state_lock:
             if self._state is AutomationState.RUNNING:
-                self._run_gate.clear()
-                self._set_state(AutomationState.PAUSED)
-                self.callbacks.status("Pause demandée avec F8")
-            elif self._state is AutomationState.PAUSED:
-                self._run_gate.set()
-                self._set_state(AutomationState.RUNNING)
-                self.callbacks.status("Reprise demandée avec F8")
+                self.pause()
+            else:
+                self.resume()
 
     def _motion_checkpoint(self) -> None:
         if self._stop.is_set():
@@ -553,6 +618,7 @@ class AutomationRunner:
         if self._mouse is not None and self._mouse.emergency_stop_requested():
             self._stop.set()
             raise AutomationStopped
+        self._handle_pause_hotkey()
 
     def _varied(self, value: float) -> float:
         return self.timing.varied(value, self.random)
