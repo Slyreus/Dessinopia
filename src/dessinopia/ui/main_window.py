@@ -57,6 +57,7 @@ from dessinopia.core.converter import ConversionOptions, ConversionResult, Image
 from dessinopia.core.fill_planner import (
     FillOperation,
     HybridPaintingPlan,
+    PencilOperation,
     build_hybrid_fill_plan,
 )
 from dessinopia.core.models import (
@@ -356,7 +357,8 @@ class MainWindow(QMainWindow):
         self.tempo_combo.addItem("Normal", "equilibre")
         self.tempo_combo.addItem("Rapide", "rapide")
         self.tempo_combo.setToolTip(
-            "Temporisation des déplacements et des clics. Le mode Très lent réduit "
+            "Temporisation des déplacements et des clics pendant le tracé et les retouches. "
+            "Le mode Très lent réduit "
             "fortement le rythme envoyé à Heartopia et convient aux systèmes chargés."
         )
         self.tempo_combo.currentIndexChanged.connect(self._settings_changed)
@@ -693,6 +695,11 @@ class MainWindow(QMainWindow):
                 metrics.pencil_strokes,
                 hybrid.shade_count,
                 len(hybrid.families),
+                stroke_path=(
+                    operation.stroke
+                    for operation in hybrid.operations
+                    if isinstance(operation, PencilOperation)
+                ),
             )
             # A bucket operation includes tool navigation and two visual safety
             # controls; include a conservative allowance in the displayed estimate.
@@ -717,6 +724,12 @@ class MainWindow(QMainWindow):
             self.plan.stroke_count,
             self.plan.shade_count,
             len(self.plan.families),
+            stroke_path=(
+                stroke
+                for family in self.plan.families
+                for shade in family.shades
+                for stroke in shade.strokes
+            ),
         )
         fill_note = ""
         if hybrid is not None and hybrid.fill_enabled:
@@ -1394,7 +1407,7 @@ class MainWindow(QMainWindow):
         runner = AutomationRunner(
             repair_plan,
             calibration,
-            replace(TIMING_PRESETS["prudent"], stroke_cell_seconds=0.060),
+            self.settings.timing,
             verify_group=lambda group: self._observe_palette(group, calibration) or False,
             verify_tool=lambda tool: self._verify_tool(tool, calibration),
             verify_shade=lambda palette_index: self._verify_shade(
@@ -1404,7 +1417,7 @@ class MainWindow(QMainWindow):
         )
         self._append_diagnostic(
             f"Retouches au crayon ({self._hole_repair_pass}/{_MAX_HOLE_REPAIR_PASSES}) "
-            f"— {repair_plan.pixel_count} cases"
+            f"— {repair_plan.pixel_count} cases · tempo {self.tempo_combo.currentText()}"
         )
         self._launch_worker(runner, "hole_repair")
 

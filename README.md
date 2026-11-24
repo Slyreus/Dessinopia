@@ -2,7 +2,7 @@
 
 Convertit une image et la reproduit automatiquement dans l’atelier de peinture de **Heartopia**.
 
-> Version 1.0.3 pour Windows 11. Ouvrez Heartopia en mode fenêtré sans bordure.
+> Version 1.0.4 pour Windows 11. Ouvrez Heartopia en mode fenêtré sans bordure.
 
 ## Télécharger
 
@@ -50,6 +50,8 @@ Peintures réalisées avec Dessinopia et exposées dans Heartopia.
 6. **F8** met l’exécution en pause et **F12** l’arrête. Après une interruption des retouches, **Reprendre les retouches** relit la toile et reprend la correction.
 
 ### Choisir le tempo
+
+Le tempo choisi s’applique au tracé et aux retouches de l’audit.
 
 **Prudent** est le réglage initial, conseillé pour les petits dessins. **Lent** espace davantage les gestes et allonge la durée du dessin. **Très lent** convient aux PC qui peinent à suivre. Une détection reste possible à tout tempo.
 

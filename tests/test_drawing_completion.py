@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from dessinopia.automation.runner import AutomationRunner, AutomationState
 from dessinopia.core.models import REFERENCE_PROFILE_2560
 from dessinopia.core.path_planner import Cell, build_painting_plan
+from dessinopia.core.timing import TIMING_PRESETS
 from dessinopia.settings import AppSettings
 from dessinopia.ui.main_window import MainWindow
 from dessinopia.vision.detector import CanvasAssessment, CanvasEvidence, PaletteState, StateDetection
@@ -27,6 +28,7 @@ class DrawingCompletionTests(TestCase):
             self.window = MainWindow()
         self.addCleanup(self.window.close)
         self.window.settings.calibration = REFERENCE_PROFILE_2560
+        self.window.settings.timing = TIMING_PRESETS["tres_lent"]
         indices = np.array([[0, 0]], dtype=np.int16)
         self.window.result = SimpleNamespace(indices=indices)
         self.window.plan = build_painting_plan(indices)
@@ -65,11 +67,13 @@ class DrawingCompletionTests(TestCase):
     def test_draw_automatically_repairs_and_checks_again(self) -> None:
         self.finish_worker()
         self.assertEqual(self.window.runner.plan.stroke_count, 2)
+        self.assertIs(self.window.runner.timing, self.window.settings.timing)
         self.assertEqual(self.window._resume_pixels, 2)
         self.journal.clear.assert_not_called()
 
         self.finish_worker()
         self.assertEqual(self.window.runner.plan.stroke_count, 1)
+        self.assertIs(self.window.runner.timing, self.window.settings.timing)
         self.finish_worker()
 
         self.assertEqual(self.window._launch_worker.call_count, 2)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import numpy as np
@@ -56,6 +57,18 @@ class Stroke:
                 for row in range(self.start.row, self.end.row + step, step)
             )
         raise ValueError("Un trait simple doit être horizontal ou vertical")
+
+    def drag_steps(self) -> Iterator[tuple[Cell, bool]]:
+        """Yield cells after the start, with a hold at each turn and at the end."""
+        trace = self.trace_cells
+        for previous, cell, following in zip(trace, trace[1:], trace[2:]):
+            turns = (
+                cell.column - previous.column != following.column - cell.column
+                or cell.row - previous.row != following.row - cell.row
+            )
+            yield cell, turns
+        if len(trace) > 1:
+            yield trace[-1], True
 
     @property
     def covered_cells(self) -> frozenset[Cell]:

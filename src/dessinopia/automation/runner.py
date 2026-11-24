@@ -357,10 +357,9 @@ class AutomationRunner:
 
         self._checkpoint()
         assert self._mouse is not None
-        trace = stroke.trace_cells
         first = self.calibration.canvas.cell_center(
-            trace[0].column,
-            trace[0].row,
+            stroke.start.column,
+            stroke.start.row,
             self.plan.width,
             self.plan.height,
         )
@@ -368,8 +367,8 @@ class AutomationRunner:
         self._motion_checkpoint()
         self._mouse.left_down()
         try:
-            self._motion_sleep(self.timing.stroke_cell_seconds)
-            for cell in trace[1:]:
+            self._motion_sleep(self.timing.pencil_hold_seconds)
+            for cell, hold in stroke.drag_steps():
                 self._motion_checkpoint()
                 point = self.calibration.canvas.cell_center(
                     cell.column,
@@ -381,15 +380,15 @@ class AutomationRunner:
                     point,
                     self._varied(self.timing.stroke_cell_seconds),
                 )
-            if len(trace) > 1:
-                self._motion_sleep(self.timing.stroke_cell_seconds)
+                if hold:
+                    self._motion_sleep(self.timing.pencil_hold_seconds)
         finally:
             self._mouse.left_up()
 
     def _motion_sleep(self, seconds: float) -> None:
         """Wait inside a gesture without pausing while the button is held."""
 
-        deadline = time.monotonic() + self._varied(seconds)
+        deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             self._motion_checkpoint()
             remaining = deadline - time.monotonic()
